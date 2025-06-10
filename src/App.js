@@ -164,7 +164,6 @@ function MainApp({ user }) {
     const [recipientEmail, setRecipientEmail] = useState('');
     const [isLoading, setIsLoading] = useState(true);
     const [isSubmitting, setIsSubmitting] = useState(false);
-    const [submitStatus, setSubmitStatus] = useState('');
     
     const [isAdminMode, setIsAdminMode] = useState(false);
     const [isPasswordPromptOpen, setIsPasswordPromptOpen] = useState(false);
@@ -274,21 +273,18 @@ function MainApp({ user }) {
         return imageUrls;
     };
 
-    const handleSubmitAndEmail = async () => {
+    const handleSave = async () => {
         if (!form.locationAddress || !form.responseLeader) {
             showModal("Ufullstendig rapport", "Fyll ut 'Skadestedets adresse' og 'Utrykningsleder'.");
             return;
         }
         setIsSubmitting(true);
         try {
-            setSubmitStatus('Oppretter rapport...');
             const newReportRef = doc(collection(db, "reports"));
             const reportId = newReportRef.id;
 
-            setSubmitStatus('Laster opp bilder...');
             const imageUrls = await uploadImages(reportId);
             
-            setSubmitStatus('Lagrer rapport...');
             const finalReportData = { 
                 ...form, 
                 id: reportId,
@@ -298,22 +294,13 @@ function MainApp({ user }) {
             };
             await setDoc(newReportRef, finalReportData);
             
-            setSubmitStatus('Genererer PDF...');
-            await downloadReportAsPdf(finalReportData);
-            
-            setSubmitStatus('Klargjør e-post...');
-            const subject = `RVR Rapport: ${finalReportData.locationAddress}`;
-            const body = `Hei,\n\nHer er en RVR rapport.\n\n(PDF av rapporten er lastet ned på din enhet og kan legges ved manuelt).`;
-            window.location.href = `mailto:${recipientEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-            
-            showModal("Suksess!", "Rapporten er lagret, PDF er lastet ned og e-post er klargjort.", () => resetForm(false));
+            showModal("Suksess!", "Rapporten er lagret i arkivet.", () => resetForm(false));
 
         } catch (error) {
             console.error("Submit Error: ", error);
-            showModal("Feil ved innsending", `Noe gikk galt. Rapporten ble ikke lagret. Feil: ${error.message}`);
+            showModal("Feil ved lagring", `Noe gikk galt. Rapporten ble ikke lagret. Feil: ${error.message}`);
         } finally {
             setIsSubmitting(false);
-            setSubmitStatus('');
         }
     };
 
@@ -335,7 +322,7 @@ function MainApp({ user }) {
             {modal.isOpen && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm text-center">{modal.onConfirm ? <AlertTriangle className="h-12 w-12 text-yellow-500 mx-auto mb-4" /> : <ShieldCheck className="h-12 w-12 text-green-500 mx-auto mb-4" />}<h2 className="text-xl font-bold text-gray-800 mb-2">{modal.title}</h2><p className="text-gray-600 mb-6">{modal.message}</p><div className={`flex ${modal.onConfirm ? 'justify-between' : 'justify-center'}`}>{modal.onConfirm && <button onClick={closeModal} className="bg-gray-200 text-gray-800 font-bold py-2 px-6 rounded-md">Avbryt</button>}<button onClick={handleConfirm} className="bg-red-600 text-white font-bold py-2 px-6 rounded-md">{modal.onConfirm ? 'Bekreft' : 'OK'}</button></div></div></div>)}
             {isPasswordPromptOpen && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><form onSubmit={handlePasswordSubmit} className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm"><div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Admin-pålogging</h2><button type="button" onClick={() => setIsPasswordPromptOpen(false)}><X size={24} /></button></div><p className="text-sm text-gray-600 mb-4">Skriv inn passord.</p><div><label htmlFor="password">Passord</label><input type="password" id="password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} className={`w-full p-2 border ${passwordError ? 'border-red-500' : 'border-gray-300'} rounded-md`} autoFocus/>{passwordError && <p className="text-red-500 text-xs mt-1">{passwordError}</p>}</div><button type="submit" className="w-full mt-4 bg-red-600 text-white font-bold py-2 px-4 rounded-md flex items-center justify-center"><KeyRound size={18} className="mr-2" /> Logg inn</button></form></div>)}
             {isAdminMode && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-md"><div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Admin-innstillinger</h2><button onClick={() => setIsAdminMode(false)}><X size={24} /></button></div><div><label htmlFor="adminEmail">Mottakerens e-post</label><input type="email" id="adminEmail" value={tempAdminEmail} onChange={(e) => setTempAdminEmail(e.target.value)} className="w-full p-2 border border-gray-300 rounded-md"/></div><button onClick={saveAdminEmail} className="w-full mt-4 bg-red-600 text-white font-bold py-2 px-4 rounded-md flex items-center justify-center"><Save size={18} className="mr-2" /> Lagre</button></div></div>)}
-            {isArchiveOpen && (<div className="fixed inset-0 bg-white z-40 p-4 sm:p-6 lg:p-8"><div className="max-w-4xl mx-auto h-full flex flex-col"><div className="flex justify-between items-center mb-4 pb-4 border-b"><h2 className="text-2xl font-bold text-red-800">Rapportarkiv</h2><button onClick={() => { setIsArchiveOpen(false); setSelectedReport(null); }} className="p-2 text-gray-600 hover:text-red-700"><X size={28} /></button></div>{isArchiveLoading ? (<div className="flex-grow flex items-center justify-center"><Loader2 className="h-12 w-12 animate-spin text-red-600" /></div>) : selectedReport ? (<ReportDetailView report={selectedReport} onBack={() => setSelectedReport(null)} />) : (<ArchiveListView reports={archivedReports} onSelectReport={setSelectedReport} />)}</div></div>)}
+            {isArchiveOpen && (<div className="fixed inset-0 bg-white z-40 p-4 sm:p-6 lg:p-8"><div className="max-w-4xl mx-auto h-full flex flex-col"><div className="flex justify-between items-center mb-4 pb-4 border-b"><h2 className="text-2xl font-bold text-red-800">Rapportarkiv</h2><button onClick={() => { setIsArchiveOpen(false); setSelectedReport(null); }} className="p-2 text-gray-600 hover:text-red-700"><X size={28} /></button></div>{isArchiveLoading ? (<div className="flex-grow flex items-center justify-center"><Loader2 className="h-12 w-12 animate-spin text-red-600" /></div>) : selectedReport ? (<ReportDetailView report={selectedReport} onBack={() => setSelectedReport(null)} recipientEmail={recipientEmail} />) : (<ArchiveListView reports={archivedReports} onSelectReport={setSelectedReport} />)}</div></div>)}
             {isInfoOpen && <InfoModal onClose={() => setIsInfoOpen(false)} />}
             
             <header className="bg-red-700 text-white shadow-md sticky top-0 z-20">
@@ -403,8 +390,8 @@ function MainApp({ user }) {
             
             <footer className="fixed bottom-0 left-0 right-0 bg-white bg-opacity-90 p-4 border-t z-10">
                 <div className="container mx-auto flex flex-col md:flex-row gap-4">
-                     <button type="button" onClick={handleSubmitAndEmail} disabled={isSubmitting} className="w-full md:w-2/3 bg-green-600 text-white font-bold py-3 px-4 rounded-md flex items-center justify-center disabled:bg-gray-400">
-                        {isSubmitting ? <><Loader2 className="animate-spin mr-2" /> {submitStatus} </>: <><Mail size={22} className="mr-2" /> Lagre, Last Ned & Klargjør E-post</>}
+                     <button type="button" onClick={handleSave} disabled={isSubmitting} className="w-full md:w-2/3 bg-green-600 text-white font-bold py-3 px-4 rounded-md flex items-center justify-center disabled:bg-gray-400">
+                        {isSubmitting ? <><Loader2 className="animate-spin mr-2" /> Lagrer... </>: <><Save size={22} className="mr-2" /> Lagre Rapport</>}
                     </button>
                      <button type="button" onClick={() => resetForm(true)} disabled={isSubmitting} className="w-full md:w-1/3 bg-gray-500 text-white font-bold py-3 px-4 rounded-md flex items-center justify-center disabled:bg-gray-400">
                         <X size={22} className="mr-2" /> Nullstill
@@ -541,7 +528,7 @@ function ArchiveListView({ reports, onSelectReport }) {
     return <div className="space-y-3 overflow-y-auto">{reports.map(report => (<button key={report.id} onClick={() => onSelectReport(report)} className="w-full text-left p-4 bg-gray-50 hover:bg-red-50 border border-gray-200 rounded-lg shadow-sm transition-all"><p className="font-bold text-gray-800">{report.locationAddress}</p><p className="text-sm text-gray-600">{report.createdAt ? new Date(report.createdAt.seconds * 1000).toLocaleString('nb-NO') : 'Dato mangler'}</p></button>))}</div>;
 }
 
-function ReportDetailView({ report, onBack }) {
+function ReportDetailView({ report, onBack, recipientEmail }) {
     const [isDownloading, setIsDownloading] = useState(false);
 
     const handleDownload = async () => {
@@ -550,19 +537,30 @@ function ReportDetailView({ report, onBack }) {
         setIsDownloading(false);
     };
 
+    const handleEmail = () => {
+        const subject = `RVR Rapport: ${report.locationAddress}`;
+        const body = `Hei,\n\nHer er en RVR rapport.\n\n(For å sende rapporten, last den først ned som PDF og legg den ved i denne e-posten).`;
+        window.location.href = `mailto:${recipientEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    };
+
     const DetailSection = ({ title, children }) => (<div className="mb-6"><h3 className="text-lg font-bold text-red-800 border-b pb-2 mb-3">{title}</h3>{children}</div>);
     const DetailItem = ({ label, value }) => (<p className="mb-1"><strong className="font-semibold text-gray-700">{label}:</strong> {Array.isArray(value) && value.length > 0 ? value.join(', ') : (!Array.isArray(value) && value ? value : 'Ikke spesifisert')}</p>);
 
     return (
         <div className="overflow-y-auto flex-grow">
-            <div className='flex justify-between items-center mb-4'>
+            <div className='flex justify-between items-center mb-4 flex-wrap gap-2'>
                 <button onClick={onBack} className="flex items-center gap-2 text-red-600 font-semibold hover:underline">
                     <ArrowLeft size={20} /> Tilbake til arkivlisten
                 </button>
-                <button onClick={handleDownload} disabled={isDownloading} className="flex items-center gap-2 bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-400">
-                    {isDownloading ? <Loader2 className="animate-spin h-5 w-5 mr-2" /> : <FileDown size={20} className="mr-2" />}
-                    {isDownloading ? 'Genererer...' : 'Last ned som PDF'}
-                </button>
+                <div className='flex gap-2'>
+                    <button onClick={handleEmail} className="flex items-center gap-2 bg-gray-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-gray-700">
+                        <Mail size={20} className="mr-2" /> Send i E-post
+                    </button>
+                    <button onClick={handleDownload} disabled={isDownloading} className="flex items-center gap-2 bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-400">
+                        {isDownloading ? <Loader2 className="animate-spin h-5 w-5 mr-2" /> : <FileDown size={20} className="mr-2" />}
+                        {isDownloading ? 'Genererer...' : 'Last ned som PDF'}
+                    </button>
+                </div>
             </div>
             <div className="bg-white p-4 sm:p-6 rounded-lg border">
                  <DetailSection title="Generell Informasjon">
