@@ -247,7 +247,7 @@ function MainApp({ user }) {
             await setDoc(doc(db, "rvrSettings", "config"), { recipientEmail: tempAdminEmail });
             setRecipientEmail(tempAdminEmail); setIsAdminMode(false);
             showModal("Suksess", "Mottaker-e-post er oppdatert!");
-        } catch (error) { showModal("Feil", `Kunne ikke lagre e-post. Feil: ${error.message}`); }
+        } catch (error) { showModal("Feil", `Kunne ikke lagre e-post. Sjekk at sikkerhetsreglene i Firebase er korrekte. Feil: ${error.message}`); }
     };
 
     const openArchive = async () => {
@@ -262,11 +262,17 @@ function MainApp({ user }) {
     };
     
     const handleLogout = async () => { await signOut(auth); };
-    const uploadImages = async (reportId) => Promise.all(images.map(async (image) => {
-        const imageRef = ref(storage, `reports/${reportId}/${image.file.name}`);
-        await uploadBytes(imageRef, image.file);
-        return getDownloadURL(imageRef);
-    }));
+    const uploadImages = async (reportId) => {
+        if (images.length === 0) return [];
+        const imageUrls = await Promise.all(
+            images.map(async (image) => {
+                const imageRef = ref(storage, `reports/${reportId}/${image.file.name}`);
+                await uploadBytes(imageRef, image.file);
+                return getDownloadURL(imageRef);
+            })
+        );
+        return imageUrls;
+    };
 
     const handleSubmitAndEmail = async () => {
         if (!form.locationAddress || !form.responseLeader) {
@@ -275,12 +281,18 @@ function MainApp({ user }) {
         }
         setIsSubmitting(true);
         try {
+            setSubmitStatus('Laster opp bilder...');
+            const reportId = Date.now().toString(); // Create a temporary unique ID for the report
+            const imageUrls = await uploadImages(reportId);
+            
             setSubmitStatus('Lagrer rapport...');
-            const reportData = { ...form, createdAt: serverTimestamp(), submittedBy: user.email };
-            const reportRef = await addDoc(collection(db, "reports"), reportData);
-            const imageUrls = await uploadImages(reportRef.id);
-            const finalReportData = { ...reportData, imageUrls };
-            await setDoc(reportRef, { imageUrls }, { merge: true });
+            const finalReportData = { 
+                ...form, 
+                createdAt: serverTimestamp(), 
+                submittedBy: user.email,
+                imageUrls: imageUrls // Add the image URLs to the data being saved
+            };
+            await addDoc(collection(db, "reports"), finalReportData);
             
             setSubmitStatus('Genererer PDF...');
             await downloadReportAsPdf(finalReportData);
@@ -402,72 +414,80 @@ function MainApp({ user }) {
 // --- Helper components for Archive & PDF ---
 
 const downloadReportAsPdf = async (reportData) => {
-    // This is a simplified, more robust PDF generation function
     if (!window.jspdf) {
         alert("PDF-bibliotek ikke lastet. Prøv å laste siden på nytt.");
         return;
     }
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF('p', 'mm', 'a4');
-    let y = 15; // Start position
+    let y = 15;
     const margin = 15;
     const pageWidth = pdf.internal.pageSize.getWidth();
     const addText = (text, x, yPos, options) => {
-        const lines = pdf.splitTextToSize(text, pageWidth - margin * 2);
+        if (!text) return yPos;
+        const lines = pdf.splitTextToSize(String(text), pageWidth - margin * 2);
         pdf.text(lines, x, yPos, options);
-        return yPos + (lines.length * 5); // Rough line height
+        return yPos + (lines.length * 5);
     };
-
-    pdf.setFontSize(18).text("RVR Rapport", margin, y);
-    y += 10;
-
-    pdf.setFontSize(12).text(`Dato: ${reportData.reportDate} | Tid: ${reportData.startTime}`, margin, y);
-    y+= 7;
-    pdf.text(`Adresse: ${reportData.locationAddress}`, margin, y);
-    y+= 7;
-    pdf.text(`Utrykningsleder: ${reportData.responseLeader}`, margin, y);
-    y+= 10;
-    
-    // Add other sections programmatically
-    pdf.setFontSize(14).text("Beskrivelse av forløp", margin, y);
-    y += 2;
-    pdf.setDrawColor(0).line(margin, y, pageWidth - margin, y); // horizontal line
-    y += 5;
-    y = addText(reportData.damageDescription || 'Ingen beskrivelse', margin, y);
-    y += 5;
-
-    // Add images
-    if (reportData.imageUrls && reportData.imageUrls.length > 0) {
-        y += 5;
-        pdf.setFontSize(14).text("Bilder", margin, y);
+    const addSection = (title, contentFn) => {
+        if (y > 250) { pdf.addPage(); y = 15; }
+        pdf.setFontSize(14).text(title, margin, y);
         y += 2;
         pdf.setDrawColor(0).line(margin, y, pageWidth - margin, y);
-        y += 5;
+        y += 7;
+        pdf.setFontSize(11);
+        y = contentFn(y);
+        y += 10;
+    };
+
+    pdf.setFontSize(18).text("RVR Rapport", margin, y); y += 10;
+    pdf.setFontSize(10).text(`Rapportdato: ${new Date().toLocaleDateString('nb-NO')}`, margin, y); y += 10;
+
+    addSection("Generell Informasjon", (y) => {
+        y = addText(`Dato: ${reportData.reportDate || ''}`, margin, y);
+        y = addText(`Tidspunkt: ${reportData.startTime || ''}`, margin, y);
+        y = addText(`Adresse: ${reportData.locationAddress || ''}`, margin, y);
+        y = addText(`Kommune: ${reportData.municipality || ''}`, margin, y);
+        y = addText(`Utrykningsleder: ${reportData.responseLeader || ''}`, margin, y);
+        return y;
+    });
+
+    addSection("Forsikringstaker(e)", (y) => {
+        (reportData.stakeholders || []).forEach((s, i) => {
+            y = addText(`Person ${i+1}: ${s.name || ''} (${s.type || ''})`, margin, y);
+            y = addText(`   Tlf: ${s.phone || ''}`, margin, y);
+            y = addText(`   Adresse: ${s.address || ''}`, margin, y);
+            y = addText(`   Selskap: ${s.insurance || ''}`, margin, y);
+            y += 3;
+        });
+        return y;
+    });
+    
+    addSection("Beskrivelse av forløp", (y) => addText(reportData.damageDescription, margin, y));
+    
+    if (reportData.imageUrls && reportData.imageUrls.length > 0) {
+        addSection("Bilder", (y) => {
+            pdf.text("Bilder er inkludert på de neste sidene.", margin, y);
+            return y;
+        });
 
         for (const url of reportData.imageUrls) {
             try {
                 const response = await fetch(url);
                 const blob = await response.blob();
                 const reader = new FileReader();
-                await new Promise(resolve => {
-                    reader.onload = resolve;
+                const dataUrl = await new Promise(resolve => {
+                    reader.onload = e => resolve(e.target.result);
                     reader.readAsDataURL(blob);
                 });
-                const imgData = reader.result;
-                const imgProps = pdf.getImageProperties(imgData);
+                
+                pdf.addPage();
+                const imgProps = pdf.getImageProperties(dataUrl);
                 const imgWidth = pageWidth - margin * 2;
                 const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
-                if (y + imgHeight > pdf.internal.pageSize.getHeight() - margin) {
-                    pdf.addPage();
-                    y = margin;
-                }
-                pdf.addImage(imgData, 'JPEG', margin, y, imgWidth, imgHeight);
-                y += imgHeight + 10;
-            } catch (e) {
-                console.error("Could not add image to PDF:", e);
-                pdf.text("Kunne ikke laste bilde.", margin, y);
-                y += 10;
-            }
+                pdf.addImage(dataUrl, 'JPEG', margin, margin, imgWidth, imgHeight);
+
+            } catch (e) { console.error("Could not add image to PDF:", e); }
         }
     }
 
