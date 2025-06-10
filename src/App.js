@@ -178,7 +178,6 @@ function MainApp({ user }) {
     const [selectedReport, setSelectedReport] = useState(null);
     const [isArchiveLoading, setIsArchiveLoading] = useState(false);
     const [isInfoOpen, setIsInfoOpen] = useState(false);
-    const pdfGeneratorRef = useRef();
 
     useEffect(() => {
         const initAppData = async () => {
@@ -248,7 +247,7 @@ function MainApp({ user }) {
             await setDoc(doc(db, "rvrSettings", "config"), { recipientEmail: tempAdminEmail });
             setRecipientEmail(tempAdminEmail); setIsAdminMode(false);
             showModal("Suksess", "Mottaker-e-post er oppdatert!");
-        } catch (error) { showModal("Feil", "Kunne ikke lagre e-post."); }
+        } catch (error) { showModal("Feil", `Kunne ikke lagre e-post. Feil: ${error.message}`); }
     };
 
     const openArchive = async () => {
@@ -275,9 +274,8 @@ function MainApp({ user }) {
             return;
         }
         setIsSubmitting(true);
-        setSubmitStatus('Lagrer rapport...');
         try {
-            // Step 1: Save report
+            setSubmitStatus('Lagrer rapport...');
             const reportData = { ...form, createdAt: serverTimestamp(), submittedBy: user.email };
             const reportRef = await addDoc(collection(db, "reports"), reportData);
             const imageUrls = await uploadImages(reportRef.id);
@@ -285,13 +283,9 @@ function MainApp({ user }) {
             await setDoc(reportRef, { imageUrls }, { merge: true });
             
             setSubmitStatus('Genererer PDF...');
-
-            // Step 2: Download PDF
-            await downloadReportAsPdf(finalReportData, pdfGeneratorRef);
+            await downloadReportAsPdf(finalReportData);
             
             setSubmitStatus('Klargjør e-post...');
-
-            // Step 3: Prepare Email
             const subject = `RVR Rapport: ${finalReportData.locationAddress}`;
             const body = `Hei,\n\nHer er en RVR rapport.\n\n(PDF av rapporten er lastet ned på din enhet og kan legges ved manuelt).`;
             window.location.href = `mailto:${recipientEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
@@ -321,7 +315,6 @@ function MainApp({ user }) {
     
     return (
         <div className="bg-gray-50 min-h-screen font-sans">
-             <div ref={pdfGeneratorRef} className="absolute -left-[9999px] top-0"></div>
             {/* --- All Modals --- */}
             {modal.isOpen && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm text-center">{modal.onConfirm ? <AlertTriangle className="h-12 w-12 text-yellow-500 mx-auto mb-4" /> : <ShieldCheck className="h-12 w-12 text-green-500 mx-auto mb-4" />}<h2 className="text-xl font-bold text-gray-800 mb-2">{modal.title}</h2><p className="text-gray-600 mb-6">{modal.message}</p><div className={`flex ${modal.onConfirm ? 'justify-between' : 'justify-center'}`}>{modal.onConfirm && <button onClick={closeModal} className="bg-gray-200 text-gray-800 font-bold py-2 px-6 rounded-md">Avbryt</button>}<button onClick={handleConfirm} className="bg-red-600 text-white font-bold py-2 px-6 rounded-md">{modal.onConfirm ? 'Bekreft' : 'OK'}</button></div></div></div>)}
             {isPasswordPromptOpen && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><form onSubmit={handlePasswordSubmit} className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm"><div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Admin-pålogging</h2><button type="button" onClick={() => setIsPasswordPromptOpen(false)}><X size={24} /></button></div><p className="text-sm text-gray-600 mb-4">Skriv inn passord.</p><div><label htmlFor="password">Passord</label><input type="password" id="password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} className={`w-full p-2 border ${passwordError ? 'border-red-500' : 'border-gray-300'} rounded-md`} autoFocus/>{passwordError && <p className="text-red-500 text-xs mt-1">{passwordError}</p>}</div><button type="submit" className="w-full mt-4 bg-red-600 text-white font-bold py-2 px-4 rounded-md flex items-center justify-center"><KeyRound size={18} className="mr-2" /> Logg inn</button></form></div>)}
@@ -408,51 +401,77 @@ function MainApp({ user }) {
 
 // --- Helper components for Archive & PDF ---
 
-const downloadReportAsPdf = async (reportData, containerRef) => {
-    const element = containerRef.current;
-    if (!element) return;
-    
-    // Temporarily render the component for PDF generation
-    const tempContainer = document.createElement('div');
-    element.appendChild(tempContainer);
-    
-    const { createRoot } = await import('react-dom/client');
-    const root = createRoot(tempContainer);
+const downloadReportAsPdf = async (reportData) => {
+    // This is a simplified, more robust PDF generation function
+    if (!window.jspdf) {
+        alert("PDF-bibliotek ikke lastet. Prøv å laste siden på nytt.");
+        return;
+    }
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    let y = 15; // Start position
+    const margin = 15;
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const addText = (text, x, yPos, options) => {
+        const lines = pdf.splitTextToSize(text, pageWidth - margin * 2);
+        pdf.text(lines, x, yPos, options);
+        return yPos + (lines.length * 5); // Rough line height
+    };
 
-    return new Promise(async (resolve) => {
-        const ReportForPdf = () => (
-            <div className="bg-white p-8 w-[800px]">
-                <ReportDetailView report={reportData} onBack={() => {}} isPdfMode={true} />
-            </div>
-        );
-        root.render(<ReportForPdf />);
+    pdf.setFontSize(18).text("RVR Rapport", margin, y);
+    y += 10;
 
-        setTimeout(async () => {
-            if (!window.html2canvas || !window.jspdf) {
-                console.error("PDF libraries not loaded!");
-                alert("Kunne ikke generere PDF. Prøv å laste siden på nytt.");
-                root.unmount();
-                element.removeChild(tempContainer);
-                resolve();
-                return;
+    pdf.setFontSize(12).text(`Dato: ${reportData.reportDate} | Tid: ${reportData.startTime}`, margin, y);
+    y+= 7;
+    pdf.text(`Adresse: ${reportData.locationAddress}`, margin, y);
+    y+= 7;
+    pdf.text(`Utrykningsleder: ${reportData.responseLeader}`, margin, y);
+    y+= 10;
+    
+    // Add other sections programmatically
+    pdf.setFontSize(14).text("Beskrivelse av forløp", margin, y);
+    y += 2;
+    pdf.setDrawColor(0).line(margin, y, pageWidth - margin, y); // horizontal line
+    y += 5;
+    y = addText(reportData.damageDescription || 'Ingen beskrivelse', margin, y);
+    y += 5;
+
+    // Add images
+    if (reportData.imageUrls && reportData.imageUrls.length > 0) {
+        y += 5;
+        pdf.setFontSize(14).text("Bilder", margin, y);
+        y += 2;
+        pdf.setDrawColor(0).line(margin, y, pageWidth - margin, y);
+        y += 5;
+
+        for (const url of reportData.imageUrls) {
+            try {
+                const response = await fetch(url);
+                const blob = await response.blob();
+                const reader = new FileReader();
+                await new Promise(resolve => {
+                    reader.onload = resolve;
+                    reader.readAsDataURL(blob);
+                });
+                const imgData = reader.result;
+                const imgProps = pdf.getImageProperties(imgData);
+                const imgWidth = pageWidth - margin * 2;
+                const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
+                if (y + imgHeight > pdf.internal.pageSize.getHeight() - margin) {
+                    pdf.addPage();
+                    y = margin;
+                }
+                pdf.addImage(imgData, 'JPEG', margin, y, imgWidth, imgHeight);
+                y += imgHeight + 10;
+            } catch (e) {
+                console.error("Could not add image to PDF:", e);
+                pdf.text("Kunne ikke laste bilde.", margin, y);
+                y += 10;
             }
-            const canvas = await window.html2canvas(tempContainer.firstChild, { scale: 2, useCORS: true });
-            const data = canvas.toDataURL('image/png');
-            
-            const { jsPDF } = window.jspdf;
-            const pdf = new jsPDF('p', 'mm', 'a4');
-            const imgProperties = pdf.getImageProperties(data);
-            const pdfWidth = pdf.internal.pageSize.getWidth();
-            const pdfHeight = (imgProperties.height * pdfWidth) / imgProperties.width;
-            
-            pdf.addImage(data, 'PNG', 0, 0, pdfWidth, pdfHeight);
-            pdf.save(`RVR-Rapport-${reportData.locationAddress.replace(/ /g, '_')}.pdf`);
-            
-            root.unmount();
-            element.removeChild(tempContainer);
-            resolve();
-        }, 1000); // Delay to ensure images are rendered
-    });
+        }
+    }
+
+    pdf.save(`RVR-Rapport-${reportData.locationAddress.replace(/ /g, '_')}.pdf`);
 };
 
 
@@ -461,13 +480,12 @@ function ArchiveListView({ reports, onSelectReport }) {
     return <div className="space-y-3 overflow-y-auto">{reports.map(report => (<button key={report.id} onClick={() => onSelectReport(report)} className="w-full text-left p-4 bg-gray-50 hover:bg-red-50 border border-gray-200 rounded-lg shadow-sm transition-all"><p className="font-bold text-gray-800">{report.locationAddress}</p><p className="text-sm text-gray-600">{report.createdAt ? new Date(report.createdAt.seconds * 1000).toLocaleString('nb-NO') : 'Dato mangler'}</p></button>))}</div>;
 }
 
-function ReportDetailView({ report, onBack, isPdfMode = false }) {
-    const reportRef = useRef();
+function ReportDetailView({ report, onBack }) {
     const [isDownloading, setIsDownloading] = useState(false);
 
     const handleDownload = async () => {
         setIsDownloading(true);
-        await downloadReportAsPdf({ ...report, imageUrls: report.imageUrls || [] }, reportRef);
+        await downloadReportAsPdf({ ...report, imageUrls: report.imageUrls || [] });
         setIsDownloading(false);
     };
 
@@ -476,19 +494,17 @@ function ReportDetailView({ report, onBack, isPdfMode = false }) {
 
     return (
         <div className="overflow-y-auto flex-grow">
-            {!isPdfMode && (
-                <div className='flex justify-between items-center mb-4'>
-                    <button onClick={onBack} className="flex items-center gap-2 text-red-600 font-semibold hover:underline">
-                        <ArrowLeft size={20} /> Tilbake til arkivlisten
-                    </button>
-                    <button onClick={handleDownload} disabled={isDownloading} className="flex items-center gap-2 bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-400">
-                        {isDownloading ? <Loader2 className="animate-spin h-5 w-5 mr-2" /> : <FileDown size={20} className="mr-2" />}
-                        {isDownloading ? 'Genererer...' : 'Last ned som PDF'}
-                    </button>
-                </div>
-            )}
-            <div ref={reportRef} className={isPdfMode ? '' : 'bg-white p-4 sm:p-6 rounded-lg border'}>
-                <DetailSection title="Generell Informasjon">
+            <div className='flex justify-between items-center mb-4'>
+                <button onClick={onBack} className="flex items-center gap-2 text-red-600 font-semibold hover:underline">
+                    <ArrowLeft size={20} /> Tilbake til arkivlisten
+                </button>
+                <button onClick={handleDownload} disabled={isDownloading} className="flex items-center gap-2 bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-400">
+                    {isDownloading ? <Loader2 className="animate-spin h-5 w-5 mr-2" /> : <FileDown size={20} className="mr-2" />}
+                    {isDownloading ? 'Genererer...' : 'Last ned som PDF'}
+                </button>
+            </div>
+            <div className="bg-white p-4 sm:p-6 rounded-lg border">
+                 <DetailSection title="Generell Informasjon">
                     <DetailItem label="Dato" value={report.reportDate} />
                     <DetailItem label="Tidspunkt" value={report.startTime} />
                     <DetailItem label="Adresse" value={report.locationAddress} />
@@ -588,4 +604,3 @@ function InfoModal({ onClose }) {
         </div>
     );
 }
-
