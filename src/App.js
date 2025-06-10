@@ -247,7 +247,7 @@ function MainApp({ user }) {
             await setDoc(doc(db, "rvrSettings", "config"), { recipientEmail: tempAdminEmail });
             setRecipientEmail(tempAdminEmail); setIsAdminMode(false);
             showModal("Suksess", "Mottaker-e-post er oppdatert!");
-        } catch (error) { showModal("Feil", `Kunne ikke lagre e-post. Sjekk at sikkerhetsreglene i Firebase er korrekte. Feil: ${error.message}`); }
+        } catch (error) { showModal("Feil", `Kunne ikke lagre e-post. Feil: ${error.message}`); }
     };
 
     const openArchive = async () => {
@@ -281,18 +281,23 @@ function MainApp({ user }) {
         }
         setIsSubmitting(true);
         try {
+            setSubmitStatus('Oppretter rapport...');
+            // CORRECTED LOGIC: Create doc ref first to get the ID
+            const newReportRef = doc(collection(db, "reports"));
+            const reportId = newReportRef.id;
+
             setSubmitStatus('Laster opp bilder...');
-            const reportId = Date.now().toString(); // Create a temporary unique ID for the report
             const imageUrls = await uploadImages(reportId);
             
             setSubmitStatus('Lagrer rapport...');
             const finalReportData = { 
                 ...form, 
+                id: reportId,
                 createdAt: serverTimestamp(), 
                 submittedBy: user.email,
-                imageUrls: imageUrls // Add the image URLs to the data being saved
+                imageUrls: imageUrls
             };
-            await addDoc(collection(db, "reports"), finalReportData);
+            await setDoc(newReportRef, finalReportData);
             
             setSubmitStatus('Genererer PDF...');
             await downloadReportAsPdf(finalReportData);
@@ -423,14 +428,24 @@ const downloadReportAsPdf = async (reportData) => {
     let y = 15;
     const margin = 15;
     const pageWidth = pdf.internal.pageSize.getWidth();
+
     const addText = (text, x, yPos, options) => {
         if (!text) return yPos;
         const lines = pdf.splitTextToSize(String(text), pageWidth - margin * 2);
         pdf.text(lines, x, yPos, options);
         return yPos + (lines.length * 5);
     };
+    
+    const checkPageBreak = (currentY, elementHeight) => {
+        if (currentY + elementHeight > pdf.internal.pageSize.getHeight() - margin) {
+            pdf.addPage();
+            return margin; // New y position
+        }
+        return currentY;
+    };
+
     const addSection = (title, contentFn) => {
-        if (y > 250) { pdf.addPage(); y = 15; }
+        y = checkPageBreak(y, 15);
         pdf.setFontSize(14).text(title, margin, y);
         y += 2;
         pdf.setDrawColor(0).line(margin, y, pageWidth - margin, y);
@@ -449,11 +464,13 @@ const downloadReportAsPdf = async (reportData) => {
         y = addText(`Adresse: ${reportData.locationAddress || ''}`, margin, y);
         y = addText(`Kommune: ${reportData.municipality || ''}`, margin, y);
         y = addText(`Utrykningsleder: ${reportData.responseLeader || ''}`, margin, y);
+        y = addText(`Innsendt av: ${reportData.submittedBy || ''}`, margin, y);
         return y;
     });
 
     addSection("Forsikringstaker(e)", (y) => {
         (reportData.stakeholders || []).forEach((s, i) => {
+            y = checkPageBreak(y, 25);
             y = addText(`Person ${i+1}: ${s.name || ''} (${s.type || ''})`, margin, y);
             y = addText(`   Tlf: ${s.phone || ''}`, margin, y);
             y = addText(`   Adresse: ${s.address || ''}`, margin, y);
@@ -462,14 +479,39 @@ const downloadReportAsPdf = async (reportData) => {
         });
         return y;
     });
+
+    addSection("Oppdrag og omfang", (y) => {
+        y = addText(`Sektor: ${reportData.sector?.join(', ') || 'Ikke spesifisert'}`, margin, y);
+        y = addText(`Byggtype: ${reportData.buildingType?.join(', ') || 'Ikke spesifisert'}`, margin, y);
+        y = addText(`Skadetype: ${reportData.damageType?.join(', ') || 'Ikke spesifisert'}`, margin, y);
+        y = addText(`Etasjer i bygget: ${reportData.buildingFloors || 'Ikke spesifisert'}`, margin, y);
+        y = addText(`Skadede etasjer: ${reportData.damagedFloors || 'Ikke spesifisert'}`, margin, y);
+        y = addText(`Antatt grunnflate (m²): ${reportData.baseArea || 'Ikke spesifisert'}`, margin, y);
+        y = addText(`Antatt skadet areal (m²): ${reportData.damagedArea || 'Ikke spesifisert'}`, margin, y);
+        y = addText(`Skadede rom: ${reportData.damagedRooms || 'Ikke spesifisert'}`, margin, y);
+        return y;
+    });
     
     addSection("Beskrivelse av forløp", (y) => addText(reportData.damageDescription, margin, y));
+    addSection("Reddede verdier", (y) => addText(reportData.valuesSaved, margin, y));
+
+    addSection("Utført arbeid og utstyr", (y) => {
+        y = addText(`Utført RVR-arbeid: ${reportData.workPerformed?.join(', ') || 'Ikke spesifisert'}`, margin, y);
+        y = addText(`Benyttet utstyr: ${reportData.equipmentUsed?.join(', ') || 'Ikke spesifisert'}`, margin, y);
+        return y;
+    });
+
+    addSection("Personell", (y) => {
+        y = addText(`På vakt - Stasjon: ${reportData.personnelOnDuty?.station || 'Ikke spesifisert'}, Antall: ${reportData.personnelOnDuty?.count || '0'}, Timer: ${reportData.personnelOnDuty?.hours || '0'}`, margin, y);
+        y = addText(`Innkalt - Stasjon: ${reportData.personnelCalledIn?.station || 'Ikke spesifisert'}, Antall: ${reportData.personnelCalledIn?.count || '0'}, Timer: ${reportData.personnelCalledIn?.hours || '0'}`, margin, y);
+        return y;
+    });
     
     if (reportData.imageUrls && reportData.imageUrls.length > 0) {
-        addSection("Bilder", (y) => {
-            pdf.text("Bilder er inkludert på de neste sidene.", margin, y);
-            return y;
-        });
+        pdf.addPage();
+        y = margin;
+        pdf.setFontSize(14).text("Bilder", margin, y);
+        y += 7;
 
         for (const url of reportData.imageUrls) {
             try {
@@ -481,11 +523,12 @@ const downloadReportAsPdf = async (reportData) => {
                     reader.readAsDataURL(blob);
                 });
                 
-                pdf.addPage();
                 const imgProps = pdf.getImageProperties(dataUrl);
                 const imgWidth = pageWidth - margin * 2;
                 const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
-                pdf.addImage(dataUrl, 'JPEG', margin, margin, imgWidth, imgHeight);
+                y = checkPageBreak(y, imgHeight + 5);
+                pdf.addImage(dataUrl, 'JPEG', margin, y, imgWidth, imgHeight);
+                y += imgHeight + 5;
 
             } catch (e) { console.error("Could not add image to PDF:", e); }
         }
@@ -624,3 +667,4 @@ function InfoModal({ onClose }) {
         </div>
     );
 }
+
