@@ -282,7 +282,6 @@ function MainApp({ user }) {
         setIsSubmitting(true);
         try {
             setSubmitStatus('Oppretter rapport...');
-            // CORRECTED LOGIC: Create doc ref first to get the ID
             const newReportRef = doc(collection(db, "reports"));
             const reportId = newReportRef.id;
 
@@ -428,7 +427,6 @@ const downloadReportAsPdf = async (reportData) => {
     let y = 15;
     const margin = 15;
     const pageWidth = pdf.internal.pageSize.getWidth();
-
     const addText = (text, x, yPos, options) => {
         if (!text) return yPos;
         const lines = pdf.splitTextToSize(String(text), pageWidth - margin * 2);
