@@ -517,3 +517,4 @@ function InfoModal({ onClose }) {
         </div>
     );
 }
+
