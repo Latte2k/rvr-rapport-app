@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, setDoc, addDoc, collection, serverTimestamp, query, orderBy, getDocs } from 'firebase/firestore';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -10,7 +10,7 @@ import {
     setPersistence,
     browserLocalPersistence
 } from 'firebase/auth';
-import { Camera, FileImage, Trash2, UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, FileDown, Mail } from 'lucide-react';
+import { Camera, FileImage, Trash2, UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Printer, Mail } from 'lucide-react';
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
@@ -500,9 +500,9 @@ const downloadReportAsPdf = async (reportData) => {
 
         for (const url of reportData.imageUrls) {
             try {
-                // This is a simplified fetch; in reality, CORS can be tricky.
-                // A CORS proxy might be needed if direct fetch fails.
-                const response = await fetch(url);
+                // Using a CORS proxy to fetch images, which avoids the need for special server config.
+                const proxyUrl = `https://cors-anywhere.herokuapp.com/${url}`;
+                const response = await fetch(proxyUrl);
                 const blob = await response.blob();
                 const reader = new FileReader();
                 const dataUrl = await new Promise(resolve => {
