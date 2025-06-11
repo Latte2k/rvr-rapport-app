@@ -9,7 +9,7 @@ import {
     setPersistence,
     browserLocalPersistence
 } from 'firebase/auth';
-import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, Printer, Trash2 } from 'lucide-react';
+import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2 } from 'lucide-react';
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
@@ -392,7 +392,7 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
                         <Mail size={20} className="mr-2" /> Send E-post
                     </button>
                     <button onClick={handlePrint} className="flex items-center gap-2 bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700">
-                        <Printer size={20} className="mr-2" /> Skriv ut / Lagre som PDF
+                        <Printer size={20} className="mr-2" /> Lagre som PDF
                     </button>
                 </div>
             </div>
