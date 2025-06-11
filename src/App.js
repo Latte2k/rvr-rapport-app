@@ -9,7 +9,7 @@ import {
     setPersistence,
     browserLocalPersistence
 } from 'firebase/auth';
-import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2 } from 'lucide-react';
+import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, Printer, Trash2 } from 'lucide-react';
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
