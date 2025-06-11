@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, setDoc, addDoc, collection, serverTimestamp, query, orderBy, getDocs } from 'firebase/firestore';
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { 
     getAuth, 
     onAuthStateChanged, 
@@ -10,7 +9,7 @@ import {
     setPersistence,
     browserLocalPersistence
 } from 'firebase/auth';
-import { Camera, FileImage, Trash2, UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, Printer } from 'lucide-react';
+import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, Printer, Trash2 } from 'lucide-react';
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
@@ -26,7 +25,6 @@ const firebaseConfig = {
 // --- Initialize Firebase ---
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
-const storage = getStorage(app);
 const auth = getAuth(app);
 
 // --- Helper Components ---
@@ -160,7 +158,6 @@ function MainApp({ user }) {
     };
     
     const [form, setForm] = useState(initialFormState);
-    const [images, setImages] = useState([]);
     const [recipientEmail, setRecipientEmail] = useState('');
     const [isLoading, setIsLoading] = useState(true);
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -222,14 +219,6 @@ function MainApp({ user }) {
     const addStakeholder = () => setForm(p => ({ ...p, stakeholders: [...p.stakeholders, { name: '', type: 'Eier', phone: '', address: '', insurance: '' }]}));
     const removeStakeholder = (index) => setForm(p => ({ ...p, stakeholders: p.stakeholders.filter((_, i) => i !== index) }));
     const handlePersonnelChange = (type, e) => setForm(p => ({ ...p, [type]: { ...p[type], [e.target.name]: e.target.value }}));
-    const handleImageUpload = (e) => {
-        const newImages = Array.from(e.target.files).map(file => ({ file, preview: URL.createObjectURL(file) }));
-        setImages(p => [...p, ...newImages]);
-    };
-    const removeImage = (index) => {
-        URL.revokeObjectURL(images[index].preview);
-        setImages(p => p.filter((_, i) => i !== index));
-    };
     
     const handlePasswordSubmit = (e) => {
         e.preventDefault();
@@ -261,17 +250,6 @@ function MainApp({ user }) {
     };
     
     const handleLogout = async () => { await signOut(auth); };
-    const uploadImages = async (reportId) => {
-        if (images.length === 0) return [];
-        const imageUrls = await Promise.all(
-            images.map(async (image) => {
-                const imageRef = ref(storage, `reports/${reportId}/${image.file.name}`);
-                await uploadBytes(imageRef, image.file);
-                return getDownloadURL(imageRef);
-            })
-        );
-        return imageUrls;
-    };
 
     const handleSave = async () => {
         if (!form.locationAddress || !form.responseLeader) {
@@ -280,19 +258,12 @@ function MainApp({ user }) {
         }
         setIsSubmitting(true);
         try {
-            const newReportRef = doc(collection(db, "reports"));
-            const reportId = newReportRef.id;
-
-            const imageUrls = await uploadImages(reportId);
-            
             const finalReportData = { 
                 ...form, 
-                id: reportId,
                 createdAt: serverTimestamp(), 
                 submittedBy: user.email,
-                imageUrls: imageUrls
             };
-            await setDoc(newReportRef, finalReportData);
+            await addDoc(collection(db, "reports"), finalReportData);
             
             showModal("Suksess!", "Rapporten er lagret i arkivet.", () => resetForm(false));
 
@@ -307,8 +278,6 @@ function MainApp({ user }) {
     const resetForm = (confirm = true) => {
         const doReset = () => {
             setForm(initialFormState);
-            images.forEach(img => URL.revokeObjectURL(img.preview));
-            setImages([]);
         };
         if (confirm) showModal("Nullstille skjema?", "Alle data vil bli slettet.", doReset);
         else doReset();
@@ -380,11 +349,6 @@ function MainApp({ user }) {
                         <div className="mb-4 p-4 border rounded-md bg-gray-50"><h3 className="font-semibold mb-2">På vakt</h3><div className="grid md:grid-cols-3 gap-4"><FormField label="Stasjon" name="station" value={form.personnelOnDuty.station} onChange={(e) => handlePersonnelChange('personnelOnDuty', e)} /><FormField label="Ant. mannskap" name="count" type="number" value={form.personnelOnDuty.count} onChange={(e) => handlePersonnelChange('personnelOnDuty', e)} /><FormField label="Ant. timer" name="hours" type="number" value={form.personnelOnDuty.hours} onChange={(e) => handlePersonnelChange('personnelOnDuty', e)} /></div></div>
                         <div className="p-4 border rounded-md bg-gray-50"><h3 className="font-semibold mb-2">Innkalt</h3><div className="grid md:grid-cols-3 gap-4"><FormField label="Stasjon" name="station" value={form.personnelCalledIn.station} onChange={(e) => handlePersonnelChange('personnelCalledIn', e)} /><FormField label="Ant. mannskap" name="count" type="number" value={form.personnelCalledIn.count} onChange={(e) => handlePersonnelChange('personnelCalledIn', e)} /><FormField label="Ant. timer" name="hours" type="number" value={form.personnelCalledIn.hours} onChange={(e) => handlePersonnelChange('personnelCalledIn', e)} /></div></div>
                     </div>
-                    <div className="bg-white p-6 rounded-lg shadow mb-6">
-                        <h2 className="text-lg font-bold border-b pb-2 mb-4 text-red-800">Bilder</h2>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4"><label className="flex flex-col items-center p-6 bg-white text-red-600 rounded-lg shadow-sm tracking-wide uppercase border-2 border-dashed border-gray-300 cursor-pointer hover:border-red-500 hover:text-red-700"><Camera size={32} /><span className="mt-2 text-base">Bruk kamera</span><input type='file' accept="image/*" capture="camera" className="hidden" onChange={handleImageUpload} /></label><label className="flex flex-col items-center p-6 bg-white text-red-600 rounded-lg shadow-sm tracking-wide uppercase border-2 border-dashed border-gray-300 cursor-pointer hover:border-red-500 hover:text-red-700"><FileImage size={32} /><span className="mt-2 text-base">Velg fra galleri</span><input type='file' accept="image/*" multiple className="hidden" onChange={handleImageUpload} /></label></div>
-                        {images.length > 0 && <div className="mt-6"><h3 className="font-semibold mb-2">Forhåndsvisning ({images.length} bilder):</h3><div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">{images.map((image, index) => (<div key={index} className="relative"><img src={image.preview} alt={`preview ${index}`} className="w-full h-32 object-cover rounded-md" /><button type="button" onClick={() => removeImage(index)} className="absolute top-1 right-1 bg-red-600 text-white rounded-full p-1 hover:bg-red-700"><Trash2 size={16} /></button></div>))}</div></div>}
-                    </div>
                  </form>
             </main>
             
@@ -409,8 +373,8 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
     };
 
     const handleEmail = () => {
-        const subject = `RVR Rapport: ${report.locationAddress}`;
-        const body = `Hei,\n\nEn RVR rapport er tilgjengelig i arkivet for adressen ${report.locationAddress}.`;
+        const subject = `RVR Rapport fra Larvik brann og redning.`;
+        const body = `Hei, her er en RVR rapport fra Larvik brann og redning, ligger vedlagt.`;
         window.location.href = `mailto:${recipientEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     };
 
@@ -425,7 +389,7 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
                 </button>
                 <div className='flex gap-2'>
                     <button onClick={handleEmail} className="flex items-center gap-2 bg-gray-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-gray-700">
-                        <Mail size={20} className="mr-2" /> Send E-post-varsel
+                        <Mail size={20} className="mr-2" /> Send E-post
                     </button>
                     <button onClick={handlePrint} className="flex items-center gap-2 bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700">
                         <Printer size={20} className="mr-2" /> Skriv ut / Lagre som PDF
@@ -487,12 +451,6 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
                         <DetailItem label="Stasjon" value={report.personnelCalledIn?.station} />
                         <DetailItem label="Antall" value={report.personnelCalledIn?.count} />
                         <DetailItem label="Timer" value={report.personnelCalledIn?.hours} />
-                    </div>
-                </DetailSection>
-
-                <DetailSection title="Bilder">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 print:grid-cols-1">
-                        {report.imageUrls && report.imageUrls.length > 0 ? report.imageUrls.map((url, i) => (<a key={i} href={url} target="_blank" rel="noopener noreferrer"><img src={url} alt={`Bilde ${i+1}`} className="w-full h-auto object-cover rounded-md border shadow-sm" /></a>)) : <p>Ingen bilder.</p>}
                     </div>
                 </DetailSection>
             </div>
