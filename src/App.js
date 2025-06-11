@@ -9,7 +9,7 @@ import {
     setPersistence,
     browserLocalPersistence
 } from 'firebase/auth';
-import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, Printer, Trash2 } from 'lucide-react';
+import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2 } from 'lucide-react';
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
@@ -368,8 +368,65 @@ function MainApp({ user }) {
 
 // --- Helper components for Archive & PDF ---
 function ReportDetailView({ report, onBack, recipientEmail }) {
-    const handlePrint = () => {
-        window.print();
+    const [isDownloading, setIsDownloading] = useState(false);
+
+    const downloadPdf = async () => {
+        setIsDownloading(true);
+        if (!window.jspdf) {
+            alert("PDF-bibliotek ikke lastet. Prøv å laste siden på nytt.");
+            setIsDownloading(false);
+            return;
+        }
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF('p', 'mm', 'a4');
+        let y = 15;
+        const margin = 10;
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const boxWidth = pageWidth - margin * 2;
+        const addText = (text, x, yPos, options) => {
+            if (!text) return yPos;
+            const lines = pdf.splitTextToSize(String(text), options?.maxWidth || (pageWidth - x - margin));
+            pdf.text(lines, x, yPos, options);
+            return yPos + (lines.length * 5);
+        };
+        const drawBox = (x, y, width, height) => pdf.rect(x, y, width, height);
+        const drawCheckbox = (x, y, checked) => {
+            pdf.rect(x, y - 2.5, 3, 3);
+            if (checked) {
+                pdf.text('X', x + 0.5, y);
+            }
+        };
+
+        // Header
+        pdf.setFont("helvetica", "bold").setFontSize(20);
+        pdf.text("RVR-RAPPORT", pageWidth / 2, y, { align: 'center' });
+        pdf.setFontSize(10).text("Restverdiredning", pageWidth / 2, y + 5, { align: 'center' });
+        y += 20;
+
+        // General Info Box
+        drawBox(margin, y, boxWidth, 30);
+        addText(`Dato: ${report.reportDate || ''}`, margin + 2, y + 7);
+        addText(`Tidspunkt for start: ${report.startTime || ''}`, margin + 80, y + 7);
+        addText(`Skadestedets adresse: ${report.locationAddress || ''}`, margin + 2, y + 14);
+        addText(`Kommune: ${report.municipality || ''}`, margin + 80, y + 14);
+        addText(`Utrykningsleder / RVR-ansvarlig: ${report.responseLeader || ''}`, margin + 2, y + 21);
+        y += 35;
+        
+        // Stakeholders
+        pdf.setFont("helvetica", "bold").setFontSize(12).text("Forsikringstaker og -selskap", margin, y); y += 5;
+        (report.stakeholders || []).forEach((s, i) => {
+            y = addText(`${i+1}. Navn: ${s.name || ''}`, margin, y);
+            drawCheckbox(margin + 50, y-3, s.type === 'Eier'); pdf.text('Eier', margin + 54, y-2.5);
+            drawCheckbox(margin + 70, y-3, s.type === 'Leier'); pdf.text('Leier', margin + 74, y-2.5);
+            y += 7;
+            y = addText(`Adresse: ${s.address || ''}`, margin, y);
+            y = addText(`Tlf: ${s.phone || ''}`, margin, y);
+            y = addText(`Forsikringsselskap: ${s.insurance || ''}`, margin, y);
+            y += 5;
+        });
+
+        pdf.save(`RVR-Rapport-${report.locationAddress.replace(/ /g, '_')}.pdf`);
+        setIsDownloading(false);
     };
 
     const handleEmail = () => {
@@ -378,12 +435,12 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
         window.location.href = `mailto:${recipientEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     };
 
-    const DetailSection = ({ title, children }) => (<div className="mb-6 print:mb-4"><h3 className="text-lg font-bold text-red-800 border-b pb-2 mb-3">{title}</h3>{children}</div>);
+    const DetailSection = ({ title, children }) => (<div className="mb-6"><h3 className="text-lg font-bold text-red-800 border-b pb-2 mb-3">{title}</h3>{children}</div>);
     const DetailItem = ({ label, value }) => (<p className="mb-1"><strong className="font-semibold text-gray-700">{label}:</strong> {Array.isArray(value) && value.length > 0 ? value.join(', ') : (!Array.isArray(value) && value ? value : 'Ikke spesifisert')}</p>);
 
     return (
         <div className="overflow-y-auto flex-grow">
-            <div className='flex justify-between items-center mb-4 flex-wrap gap-2 print:hidden'>
+            <div className='flex justify-between items-center mb-4 flex-wrap gap-2'>
                 <button onClick={onBack} className="flex items-center gap-2 text-red-600 font-semibold hover:underline">
                     <ArrowLeft size={20} /> Tilbake til arkivlisten
                 </button>
@@ -391,8 +448,9 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
                     <button onClick={handleEmail} className="flex items-center gap-2 bg-gray-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-gray-700">
                         <Mail size={20} className="mr-2" /> Send E-post
                     </button>
-                    <button onClick={handlePrint} className="flex items-center gap-2 bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700">
-                        <Printer size={20} className="mr-2" /> Lagre som PDF
+                    <button onClick={downloadPdf} disabled={isDownloading} className="flex items-center gap-2 bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-400">
+                        {isDownloading ? <Loader2 className="animate-spin h-5 w-5 mr-2" /> : <FileDown size={20} className="mr-2" />}
+                        {isDownloading ? 'Genererer...' : 'Lagre som PDF'}
                     </button>
                 </div>
             </div>
@@ -415,43 +473,6 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
                             <DetailItem label="Forsikringsselskap" value={s.insurance} />
                         </div>
                     ))}
-                </DetailSection>
-
-                <DetailSection title="Oppdrag og omfang">
-                    <DetailItem label="Sektor" value={report.sector} />
-                    <DetailItem label="Byggtype" value={report.buildingType} />
-                    <DetailItem label="Skadetype" value={report.damageType} />
-                    <DetailItem label="Etasjer i bygget" value={report.buildingFloors}/>
-                    <DetailItem label="Skadede etasjer" value={report.damagedFloors}/>
-                    <DetailItem label="Antatt grunnflate (m²)" value={report.baseArea}/>
-                    <DetailItem label="Antatt skadet areal (m²)" value={report.damagedArea}/>
-                    <DetailItem label="Skadede rom" value={report.damagedRooms}/>
-                </DetailSection>
-
-                 <DetailSection title="Utført arbeid og verdier">
-                    <DetailItem label="Utført RVR-arbeid" value={report.workPerformed} />
-                    <DetailItem label="Benyttet utstyr" value={report.equipmentUsed} />
-                    <p className="mt-4 font-semibold text-gray-700">Reddede verdier:</p>
-                    <p className="whitespace-pre-wrap bg-gray-50 p-3 rounded-md border">{report.valuesSaved || 'Ikke spesifisert'}</p>
-                </DetailSection>
-                
-                <DetailSection title="Beskrivelse av forløp">
-                    <p className="whitespace-pre-wrap bg-gray-50 p-3 rounded-md border">{report.damageDescription || 'Ikke spesifisert'}</p>
-                </DetailSection>
-                
-                <DetailSection title="Personell">
-                    <div className="mb-3 p-3 bg-gray-50 rounded-md border">
-                        <p className="font-semibold">På vakt:</p>
-                        <DetailItem label="Stasjon" value={report.personnelOnDuty?.station} />
-                        <DetailItem label="Antall" value={report.personnelOnDuty?.count} />
-                        <DetailItem label="Timer" value={report.personnelOnDuty?.hours} />
-                    </div>
-                     <div className="p-3 bg-gray-50 rounded-md border">
-                        <p className="font-semibold">Innkalt:</p>
-                        <DetailItem label="Stasjon" value={report.personnelCalledIn?.station} />
-                        <DetailItem label="Antall" value={report.personnelCalledIn?.count} />
-                        <DetailItem label="Timer" value={report.personnelCalledIn?.hours} />
-                    </div>
                 </DetailSection>
             </div>
         </div>
