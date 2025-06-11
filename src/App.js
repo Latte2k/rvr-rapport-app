@@ -10,7 +10,7 @@ import {
     setPersistence,
     browserLocalPersistence
 } from 'firebase/auth';
-import { Camera, FileImage, Trash2, UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Printer, Mail } from 'lucide-react';
+import { Camera, FileImage, Trash2, UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, Printer } from 'lucide-react';
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
@@ -403,164 +403,32 @@ function MainApp({ user }) {
 }
 
 // --- Helper components for Archive & PDF ---
-
-const downloadReportAsPdf = async (reportData) => {
-    if (!window.jspdf) {
-        alert("PDF-bibliotek ikke lastet. Prøv å laste siden på nytt.");
-        return;
-    }
-    const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF('p', 'mm', 'a4');
-    let y = 15;
-    const margin = 15;
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const addText = (text, x, yPos, options) => {
-        if (!text) return yPos;
-        const lines = pdf.splitTextToSize(String(text), pageWidth - margin * 2);
-        pdf.text(lines, x, yPos, options);
-        return yPos + (lines.length * 5);
-    };
-    
-    const checkPageBreak = (currentY, elementHeight) => {
-        if (currentY + elementHeight > pdf.internal.pageSize.getHeight() - margin) {
-            pdf.addPage();
-            return margin; // New y position
-        }
-        return currentY;
-    };
-
-    const addSection = (title, contentFn) => {
-        y = checkPageBreak(y, 15);
-        pdf.setFontSize(14).text(title, margin, y);
-        y += 2;
-        pdf.setDrawColor(0).line(margin, y, pageWidth - margin, y);
-        y += 7;
-        pdf.setFontSize(11);
-        y = contentFn(y);
-        y += 10;
-    };
-
-    pdf.setFontSize(18).text("RVR Rapport", margin, y); y += 10;
-    pdf.setFontSize(10).text(`Rapportdato: ${new Date().toLocaleDateString('nb-NO')}`, margin, y); y += 10;
-
-    addSection("Generell Informasjon", (y) => {
-        y = addText(`Dato: ${reportData.reportDate || ''}`, margin, y);
-        y = addText(`Tidspunkt: ${reportData.startTime || ''}`, margin, y);
-        y = addText(`Adresse: ${reportData.locationAddress || ''}`, margin, y);
-        y = addText(`Kommune: ${reportData.municipality || ''}`, margin, y);
-        y = addText(`Utrykningsleder: ${reportData.responseLeader || ''}`, margin, y);
-        y = addText(`Innsendt av: ${reportData.submittedBy || ''}`, margin, y);
-        return y;
-    });
-
-    addSection("Forsikringstaker(e)", (y) => {
-        (reportData.stakeholders || []).forEach((s, i) => {
-            y = checkPageBreak(y, 25);
-            y = addText(`Person ${i+1}: ${s.name || ''} (${s.type || ''})`, margin, y);
-            y = addText(`   Tlf: ${s.phone || ''}`, margin, y);
-            y = addText(`   Adresse: ${s.address || ''}`, margin, y);
-            y = addText(`   Selskap: ${s.insurance || ''}`, margin, y);
-            y += 3;
-        });
-        return y;
-    });
-
-    addSection("Oppdrag og omfang", (y) => {
-        y = addText(`Sektor: ${reportData.sector?.join(', ') || 'Ikke spesifisert'}`, margin, y);
-        y = addText(`Byggtype: ${reportData.buildingType?.join(', ') || 'Ikke spesifisert'}`, margin, y);
-        y = addText(`Skadetype: ${reportData.damageType?.join(', ') || 'Ikke spesifisert'}`, margin, y);
-        y = addText(`Etasjer i bygget: ${reportData.buildingFloors || 'Ikke spesifisert'}`, margin, y);
-        y = addText(`Skadede etasjer: ${reportData.damagedFloors || 'Ikke spesifisert'}`, margin, y);
-        y = addText(`Antatt grunnflate (m²): ${reportData.baseArea || 'Ikke spesifisert'}`, margin, y);
-        y = addText(`Antatt skadet areal (m²): ${reportData.damagedArea || 'Ikke spesifisert'}`, margin, y);
-        y = addText(`Skadede rom: ${reportData.damagedRooms || 'Ikke spesifisert'}`, margin, y);
-        return y;
-    });
-    
-    addSection("Beskrivelse av forløp", (y) => addText(reportData.damageDescription, margin, y));
-    addSection("Reddede verdier", (y) => addText(reportData.valuesSaved, margin, y));
-
-    addSection("Utført arbeid og utstyr", (y) => {
-        y = addText(`Utført RVR-arbeid: ${reportData.workPerformed?.join(', ') || 'Ikke spesifisert'}`, margin, y);
-        y = addText(`Benyttet utstyr: ${reportData.equipmentUsed?.join(', ') || 'Ikke spesifisert'}`, margin, y);
-        return y;
-    });
-
-    addSection("Personell", (y) => {
-        y = addText(`På vakt - Stasjon: ${reportData.personnelOnDuty?.station || 'Ikke spesifisert'}, Antall: ${reportData.personnelOnDuty?.count || '0'}, Timer: ${reportData.personnelOnDuty?.hours || '0'}`, margin, y);
-        y = addText(`Innkalt - Stasjon: ${reportData.personnelCalledIn?.station || 'Ikke spesifisert'}, Antall: ${reportData.personnelCalledIn?.count || '0'}, Timer: ${reportData.personnelCalledIn?.hours || '0'}`, margin, y);
-        return y;
-    });
-    
-    if (reportData.imageUrls && reportData.imageUrls.length > 0) {
-        pdf.addPage();
-        y = margin;
-        pdf.setFontSize(14).text("Bilder", margin, y);
-        y += 7;
-
-        for (const url of reportData.imageUrls) {
-            try {
-                // Using a CORS proxy to fetch images, which avoids the need for special server config.
-                const proxyUrl = `https://cors-anywhere.herokuapp.com/${url}`;
-                const response = await fetch(proxyUrl);
-                const blob = await response.blob();
-                const reader = new FileReader();
-                const dataUrl = await new Promise(resolve => {
-                    reader.onload = e => resolve(e.target.result);
-                    reader.readAsDataURL(blob);
-                });
-                
-                const imgProps = pdf.getImageProperties(dataUrl);
-                const imgWidth = pageWidth - margin * 2;
-                const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
-                y = checkPageBreak(y, imgHeight + 5);
-                pdf.addImage(dataUrl, 'JPEG', margin, y, imgWidth, imgHeight);
-                y += imgHeight + 5;
-
-            } catch (e) { console.error("Could not add image to PDF:", e); }
-        }
-    }
-
-    pdf.save(`RVR-Rapport-${reportData.locationAddress.replace(/ /g, '_')}.pdf`);
-};
-
-
-function ArchiveListView({ reports, onSelectReport }) {
-    if (reports.length === 0) return <div className="text-center text-gray-500 py-10">Ingen rapporter funnet i arkivet.</div>;
-    return <div className="space-y-3 overflow-y-auto">{reports.map(report => (<button key={report.id} onClick={() => onSelectReport(report)} className="w-full text-left p-4 bg-gray-50 hover:bg-red-50 border border-gray-200 rounded-lg shadow-sm transition-all"><p className="font-bold text-gray-800">{report.locationAddress}</p><p className="text-sm text-gray-600">{report.createdAt ? new Date(report.createdAt.seconds * 1000).toLocaleString('nb-NO') : 'Dato mangler'}</p></button>))}</div>;
-}
-
 function ReportDetailView({ report, onBack, recipientEmail }) {
-    const [isDownloading, setIsDownloading] = useState(false);
-
-    const handleDownload = async () => {
-        setIsDownloading(true);
-        await downloadReportAsPdf({ ...report, imageUrls: report.imageUrls || [] });
-        setIsDownloading(false);
+    const handlePrint = () => {
+        window.print();
     };
 
     const handleEmail = () => {
         const subject = `RVR Rapport: ${report.locationAddress}`;
-        const body = `Hei,\n\nHer er en RVR rapport.\n\n(For å sende rapporten, last den først ned som PDF og legg den ved i denne e-posten).`;
+        const body = `Hei,\n\nEn RVR rapport er tilgjengelig i arkivet for adressen ${report.locationAddress}.`;
         window.location.href = `mailto:${recipientEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     };
 
-    const DetailSection = ({ title, children }) => (<div className="mb-6"><h3 className="text-lg font-bold text-red-800 border-b pb-2 mb-3">{title}</h3>{children}</div>);
+    const DetailSection = ({ title, children }) => (<div className="mb-6 print:mb-4"><h3 className="text-lg font-bold text-red-800 border-b pb-2 mb-3">{title}</h3>{children}</div>);
     const DetailItem = ({ label, value }) => (<p className="mb-1"><strong className="font-semibold text-gray-700">{label}:</strong> {Array.isArray(value) && value.length > 0 ? value.join(', ') : (!Array.isArray(value) && value ? value : 'Ikke spesifisert')}</p>);
 
     return (
         <div className="overflow-y-auto flex-grow">
-            <div className='flex justify-between items-center mb-4 flex-wrap gap-2'>
+            <div className='flex justify-between items-center mb-4 flex-wrap gap-2 print:hidden'>
                 <button onClick={onBack} className="flex items-center gap-2 text-red-600 font-semibold hover:underline">
                     <ArrowLeft size={20} /> Tilbake til arkivlisten
                 </button>
                 <div className='flex gap-2'>
                     <button onClick={handleEmail} className="flex items-center gap-2 bg-gray-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-gray-700">
-                        <Mail size={20} className="mr-2" /> Send i E-post
+                        <Mail size={20} className="mr-2" /> Send E-post-varsel
                     </button>
-                    <button onClick={handleDownload} disabled={isDownloading} className="flex items-center gap-2 bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-400">
-                        {isDownloading ? <Loader2 className="animate-spin h-5 w-5 mr-2" /> : <FileDown size={20} className="mr-2" />}
-                        {isDownloading ? 'Genererer...' : 'Last ned som PDF'}
+                    <button onClick={handlePrint} className="flex items-center gap-2 bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700">
+                        <Printer size={20} className="mr-2" /> Skriv ut / Lagre som PDF
                     </button>
                 </div>
             </div>
@@ -623,13 +491,18 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
                 </DetailSection>
 
                 <DetailSection title="Bilder">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        {report.imageUrls && report.imageUrls.length > 0 ? report.imageUrls.map((url, i) => (<a key={i} href={url} target="_blank" rel="noopener noreferrer"><img src={url} alt={`Bilde ${i+1}`} className="w-full h-auto object-cover rounded-md border shadow-sm" crossOrigin="anonymous"/></a>)) : <p>Ingen bilder.</p>}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 print:grid-cols-1">
+                        {report.imageUrls && report.imageUrls.length > 0 ? report.imageUrls.map((url, i) => (<a key={i} href={url} target="_blank" rel="noopener noreferrer"><img src={url} alt={`Bilde ${i+1}`} className="w-full h-auto object-cover rounded-md border shadow-sm" /></a>)) : <p>Ingen bilder.</p>}
                     </div>
                 </DetailSection>
             </div>
         </div>
     );
+}
+
+function ArchiveListView({ reports, onSelectReport }) {
+    if (reports.length === 0) return <div className="text-center text-gray-500 py-10">Ingen rapporter funnet i arkivet.</div>;
+    return <div className="space-y-3 overflow-y-auto">{reports.map(report => (<button key={report.id} onClick={() => onSelectReport(report)} className="w-full text-left p-4 bg-gray-50 hover:bg-red-50 border border-gray-200 rounded-lg shadow-sm transition-all"><p className="font-bold text-gray-800">{report.locationAddress}</p><p className="text-sm text-gray-600">{report.createdAt ? new Date(report.createdAt.seconds * 1000).toLocaleString('nb-NO') : 'Dato mangler'}</p></button>))}</div>;
 }
 
 function InfoModal({ onClose }) {
