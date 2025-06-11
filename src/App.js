@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, setDoc, addDoc, collection, serverTimestamp, query, orderBy, getDocs } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, setDoc, addDoc, collection, serverTimestamp, query, orderBy, getDocs, updateDoc } from 'firebase/firestore';
+import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
 import { 
     getAuth, 
     onAuthStateChanged, 
@@ -9,7 +10,7 @@ import {
     setPersistence,
     browserLocalPersistence
 } from 'firebase/auth';
-import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2 } from 'lucide-react';
+import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2, Camera, Upload } from 'lucide-react';
 import { jsPDF } from "jspdf";
 
 // --- Firebase Configuration ---
@@ -26,6 +27,7 @@ const firebaseConfig = {
 // --- Initialize Firebase ---
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+const storage = getStorage(app); // Initialize Storage
 const auth = getAuth(app);
 
 // --- Helper Components ---
@@ -155,13 +157,15 @@ function MainApp({ user }) {
         damageDescription: '',
         personnelOnDuty: { station: '', count: '', hours: '' },
         personnelCalledIn: { station: '', count: '', hours: '' },
-        equipmentUsed: []
+        equipmentUsed: [],
+        images: [], // To hold selected image files
     };
     
     const [form, setForm] = useState(initialFormState);
     const [recipientEmail, setRecipientEmail] = useState('');
     const [isLoading, setIsLoading] = useState(true);
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [submissionStatus, setSubmissionStatus] = useState('');
     
     const [isAdminMode, setIsAdminMode] = useState(false);
     const [isPasswordPromptOpen, setIsPasswordPromptOpen] = useState(false);
@@ -175,6 +179,13 @@ function MainApp({ user }) {
     const [selectedReport, setSelectedReport] = useState(null);
     const [isArchiveLoading, setIsArchiveLoading] = useState(false);
     const [isInfoOpen, setIsInfoOpen] = useState(false);
+
+    useEffect(() => {
+        // Clean up object URLs on component unmount
+        return () => {
+            form.images.forEach(image => URL.revokeObjectURL(image.preview));
+        };
+    }, [form.images]);
 
     useEffect(() => {
         const initAppData = async () => {
@@ -252,19 +263,57 @@ function MainApp({ user }) {
     
     const handleLogout = async () => { await signOut(auth); };
 
+    const handleImageSelect = (e) => {
+        const files = Array.from(e.target.files);
+        const imageFiles = files.map(file => ({
+            file: file,
+            preview: URL.createObjectURL(file)
+        }));
+        setForm(prev => ({ ...prev, images: [...prev.images, ...imageFiles]}));
+    };
+
+    const handleRemoveImage = (index) => {
+        setForm(prev => {
+            const newImages = [...prev.images];
+            // Revoke the object URL to prevent memory leaks
+            URL.revokeObjectURL(newImages[index].preview);
+            newImages.splice(index, 1);
+            return { ...prev, images: newImages };
+        });
+    };
+
     const handleSave = async () => {
         if (!form.locationAddress || !form.responseLeader) {
             showModal("Ufullstendig rapport", "Fyll ut 'Skadestedets adresse' og 'Utrykningsleder'.");
             return;
         }
+        
         setIsSubmitting(true);
+        setSubmissionStatus("Lagrer rapportdata...");
+
         try {
-            const finalReportData = { 
-                ...form, 
-                createdAt: serverTimestamp(), 
-                submittedBy: user.email,
-            };
-            await addDoc(collection(db, "reports"), finalReportData);
+            // Step 1: Create the report document in Firestore to get an ID.
+            const reportData = { ...form, images: [], submittedBy: user.email, createdAt: serverTimestamp() };
+            delete reportData.images; // Remove local File objects before saving
+
+            const docRef = await addDoc(collection(db, "reports"), reportData);
+            
+            // Step 2: Upload images to Storage if any exist.
+            const imageUrls = [];
+            if (form.images.length > 0) {
+                setSubmissionStatus(`Laster opp ${form.images.length} bilder...`);
+                
+                const uploadPromises = form.images.map(image => {
+                    const imageRef = ref(storage, `reports/${docRef.id}/${image.file.name}`);
+                    return uploadBytesResumable(imageRef, image.file).then(snapshot => getDownloadURL(snapshot.ref));
+                });
+
+                imageUrls.push(...await Promise.all(uploadPromises));
+
+                // Step 3: Update the document with the image URLs.
+                setSubmissionStatus("Oppdaterer rapport med bilder...");
+                await updateDoc(docRef, { images: imageUrls });
+            }
             
             showModal("Suksess!", "Rapporten er lagret i arkivet.", () => resetForm(false));
 
@@ -273,14 +322,17 @@ function MainApp({ user }) {
             showModal("Feil ved lagring", `Noe gikk galt. Rapporten ble ikke lagret. Feil: ${error.message}`);
         } finally {
             setIsSubmitting(false);
+            setSubmissionStatus('');
         }
     };
 
+
     const resetForm = (confirm = true) => {
         const doReset = () => {
+            form.images.forEach(image => URL.revokeObjectURL(image.preview));
             setForm(initialFormState);
         };
-        if (confirm) showModal("Nullstille skjema?", "Alle data vil bli slettet.", doReset);
+        if (confirm) showModal("Nullstille skjema?", "Alle data, inkludert valgte bilder, vil bli slettet.", doReset);
         else doReset();
     };
     
@@ -309,7 +361,8 @@ function MainApp({ user }) {
             
             <main className="container mx-auto p-4 pb-24">
                 <form onSubmit={(e) => e.preventDefault()}>
-                    <div className="bg-white p-6 rounded-lg shadow mb-6">
+                    {/* ... other form sections ... */}
+                     <div className="bg-white p-6 rounded-lg shadow mb-6">
                         <h2 className="text-lg font-bold border-b pb-2 mb-4 text-red-800">Generell Informasjon</h2>
                         <div className="grid md:grid-cols-2 gap-x-6 gap-y-4">
                             <FormField label="Dato" name="reportDate" value={form.reportDate} onChange={handleInputChange} type="date" required />
@@ -345,6 +398,28 @@ function MainApp({ user }) {
                         <CheckboxGroup legend="Benyttet utstyr?" name="equipmentUsed" options={['Plast', 'Avfukter', 'Lensepumpe', 'Røykvifte', 'Sprinklerstopper', 'Strømaggregat', 'Annet']} value={form.equipmentUsed} onChange={handleCheckboxChange} />
                         <div><label htmlFor="damageDescription" className="block text-sm font-medium text-gray-700 mb-1">Beskriv skadeobjekt og forløp</label><textarea id="damageDescription" name="damageDescription" value={form.damageDescription} onChange={handleInputChange} rows="5" className="w-full p-2 border border-gray-300 rounded-md"></textarea></div>
                     </div>
+
+                    {/* --- NEW IMAGE UPLOAD SECTION --- */}
+                    <div className="bg-white p-6 rounded-lg shadow mb-6">
+                        <h2 className="text-lg font-bold border-b pb-2 mb-4 text-red-800">Bilder</h2>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                            {form.images.map((image, index) => (
+                                <div key={index} className="relative group">
+                                    <img src={image.preview} alt={`Forhåndsvisning ${index + 1}`} className="w-full h-32 object-cover rounded-md" />
+                                    <button type="button" onClick={() => handleRemoveImage(index)} className="absolute top-1 right-1 bg-black bg-opacity-50 text-white rounded-full p-1 group-hover:opacity-100 opacity-0 transition-opacity">
+                                        <Trash2 size={16} />
+                                    </button>
+                                </div>
+                            ))}
+                             <label htmlFor="imageUpload" className="w-full h-32 border-2 border-dashed rounded-md flex flex-col items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-red-600 cursor-pointer">
+                                <Upload size={32} />
+                                <span className="text-sm mt-2 text-center">Last opp bilder</span>
+                                <input id="imageUpload" type="file" multiple accept="image/*" className="hidden" onChange={handleImageSelect} />
+                            </label>
+                        </div>
+                    </div>
+
+
                     <div className="bg-white p-6 rounded-lg shadow mb-6">
                         <h2 className="text-lg font-bold border-b pb-2 mb-4 text-red-800">RVR-Personell</h2>
                         <div className="mb-4 p-4 border rounded-md bg-gray-50"><h3 className="font-semibold mb-2">På vakt</h3><div className="grid md:grid-cols-3 gap-4"><FormField label="Stasjon" name="station" value={form.personnelOnDuty.station} onChange={(e) => handlePersonnelChange('personnelOnDuty', e)} /><FormField label="Ant. mannskap" name="count" type="number" value={form.personnelOnDuty.count} onChange={(e) => handlePersonnelChange('personnelOnDuty', e)} /><FormField label="Ant. timer" name="hours" type="number" value={form.personnelOnDuty.hours} onChange={(e) => handlePersonnelChange('personnelOnDuty', e)} /></div></div>
@@ -356,7 +431,7 @@ function MainApp({ user }) {
             <footer className="fixed bottom-0 left-0 right-0 bg-white bg-opacity-90 p-4 border-t z-10">
                 <div className="container mx-auto flex flex-col md:flex-row gap-4">
                      <button type="button" onClick={handleSave} disabled={isSubmitting} className="w-full md:w-2/3 bg-green-600 text-white font-bold py-3 px-4 rounded-md flex items-center justify-center disabled:bg-gray-400">
-                        {isSubmitting ? <><Loader2 className="animate-spin mr-2" /> Lagrer... </>: <><Save size={22} className="mr-2" /> Lagre Rapport</>}
+                        {isSubmitting ? <><Loader2 className="animate-spin mr-2" /> {submissionStatus || 'Lagrer...'}</> : <><Save size={22} className="mr-2" /> Lagre Rapport</>}
                     </button>
                      <button type="button" onClick={() => resetForm(true)} disabled={isSubmitting} className="w-full md:w-1/3 bg-gray-500 text-white font-bold py-3 px-4 rounded-md flex items-center justify-center disabled:bg-gray-400">
                         <X size={22} className="mr-2" /> Nullstill
@@ -370,9 +445,11 @@ function MainApp({ user }) {
 // --- Helper components for Archive & PDF ---
 function ReportDetailView({ report, onBack, recipientEmail }) {
     const [isDownloading, setIsDownloading] = useState(false);
+    const [downloadStatus, setDownloadStatus] = useState('');
 
     const downloadPdf = async () => {
         setIsDownloading(true);
+        setDownloadStatus('Initialiserer PDF...');
         const pdf = new jsPDF('p', 'mm', 'a4');
         const margin = 10;
         const pageHeight = pdf.internal.pageSize.getHeight();
@@ -386,6 +463,7 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
             if (y + spaceNeeded > pageHeight - margin) {
                 pdf.addPage();
                 y = 15;
+                 // Optional: Add headers to new pages
             }
         };
 
@@ -419,12 +497,53 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
              y += boxHeight + fieldGap;
         };
 
+        const addImagesToPdf = async () => {
+            if (!report.images || report.images.length === 0) return;
+            
+            checkPageBreak(pageHeight); // Start images on a new page
+            pdf.setFont("helvetica", "bold").setFontSize(14).text("Vedlegg: Bilder", margin, y);
+            y += 15;
+
+            setDownloadStatus(`Laster ned ${report.images.length} bilder...`);
+
+            for (let i = 0; i < report.images.length; i++) {
+                const imageUrl = report.images[i];
+                try {
+                    const response = await fetch(imageUrl);
+                    const blob = await response.blob();
+                    const reader = new FileReader();
+                    
+                    const dataUrl = await new Promise((resolve, reject) => {
+                        reader.onload = event => resolve(event.target.result);
+                        reader.onerror = error => reject(error);
+                        reader.readAsDataURL(blob);
+                    });
+                    
+                    const imgProps = pdf.getImageProperties(dataUrl);
+                    const imgWidth = pageWidth - margin * 2;
+                    const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
+                    
+                    checkPageBreak(imgHeight + 10);
+                    
+                    pdf.addImage(dataUrl, 'JPEG', margin, y, imgWidth, imgHeight);
+                    y += imgHeight + 10;
+
+                } catch (error) {
+                    console.error("Could not add image to PDF:", error);
+                    checkPageBreak(10);
+                    pdf.setFont("helvetica", "italic").setTextColor(255, 0, 0).text(`Bilde kunne ikke lastes: ${imageUrl}`, margin, y);
+                    pdf.setTextColor(0, 0, 0);
+                    y += 10;
+                }
+            }
+        };
 
         // --- START PDF GENERATION ---
-        
+        setDownloadStatus('Bygger rapporttekst...');
         drawHeader();
 
-        // --- GENERAL INFO ---
+        // [The existing code for drawing the text part of the report goes here]
+        // (Identical to previous version, so omitted for brevity)
         pdf.setFont("helvetica", "normal").setFontSize(10);
         pdf.text(`Dato: ${report.reportDate || ''}`, margin, y);
         pdf.text(`Skadestedets adresse: ${report.locationAddress || ''}`, margin, y + fieldGap);
@@ -433,8 +552,6 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
         y += fieldGap * 2;
         pdf.text(`Utrykningsleder / RVR-ansvarlig på stedet: ${report.responseLeader || ''}`, margin, y);
         y += fieldGap + 2;
-
-        // --- STAKEHOLDERS ---
         pdf.setFont("helvetica", "bold").setFontSize(12).text("Forsikringstaker og- selskap", margin, y);
         y += lineHeight;
         (report.stakeholders || []).forEach((s, i) => {
@@ -454,42 +571,30 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
             pdf.setFont("helvetica", "normal").text(s.insurance || '', margin + 40, y);
             y += fieldGap + 2;
         });
-
-        // --- OPPDRAG OG ARBEID ---
         checkPageBreak(10);
-        pdf.line(margin, y, pageWidth - margin, y); // separator
+        pdf.line(margin, y, pageWidth - margin, y);
         y += fieldGap;
-        
         pdf.setFont("helvetica", "bold").setFontSize(12).text("Oppdrag og arbeid", margin, y);
         y += lineHeight;
-
         const createCheckboxColumn = (title, options, selected, x, startY, colWidth) => {
             let yPos = startY;
             pdf.setFont("helvetica", "bold").setFontSize(10).text(title, x, yPos);
             yPos += lineHeight;
-            options.forEach(opt => {
-                checkPageBreak(8);
-                drawCheckbox(x, yPos, opt, selected.includes(opt));
-                yPos += lineHeight;
-            });
+            options.forEach(opt => { checkPageBreak(8); drawCheckbox(x, yPos, opt, selected.includes(opt)); yPos += lineHeight; });
             return yPos;
         };
-
         const sectorOptions = ['Privat (hus og hytte)', 'Borettslag, sameie, blokk', 'Næringsbygg, kjøpesenter, restaurant, driftsbygning', 'Offentlig - kommune, fylke, stat, forsvar'];
         const buildingTypeOptions = ['Enebolig', 'Leilighet, borettslag, sameie, blokk', 'Hytte', 'Landbruksbygg', 'Industri', 'Næringsvirksomhet', 'Hotell, overnattingssted', 'Skole, barnehage, idrettshall', 'Annet'];
-        
         let yCol1 = createCheckboxColumn("Hvilken sektor gjelder det?", sectorOptions, report.sector || [], margin, y, 80);
         let yCol2 = createCheckboxColumn("Hvilken type bygg er det?", buildingTypeOptions, report.buildingType || [], margin + 95, y, 80);
         y = Math.max(yCol1, yCol2) + fieldGap;
-
+        // ... (rest of the text drawing)
         checkPageBreak(25);
         pdf.setFont("helvetica", "bold").setFontSize(10).text("Oppgi skadetype:", margin, y);
         drawCheckbox(margin + 40, y, "Brannskade", (report.damageType || []).includes("Brannskade"));
         drawCheckbox(margin + 75, y, "Vannskade", (report.damageType || []).includes("Vannskade"));
         drawCheckbox(margin + 110, y, "Annet", (report.damageType || []).includes("Annet"));
         y += fieldGap;
-        
-        // --- DAMAGE DETAILS ---
         const detailFields1 = [
             { label: 'Hvor mange etasjer har bygget?', value: report.buildingFloors },
             { label: 'Hvor stor er antatt grunnflate i m2?', value: report.baseArea },
@@ -513,10 +618,6 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
             y += lineHeight;
         });
         y -= lineHeight * (detailFields1.length -1);
-
-
-        // --- WORK PERFORMED ---
-        checkPageBreak(60);
         const workPerformedOptions = [
             'Pulversuging', 'Røykventilering', 'Lensing av vann', 'Avfukting/tørking', 'Innbo eller utstyr kjørt bort', 
             'Inventar eller utstyr tildekket med plast', 'Deler av bygningen tildekket med plast', 'Brukt flomvernmateriell', 
@@ -524,19 +625,12 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
         ];
         createCheckboxColumn("Hva slags RVR-arbeid ble utført?", workPerformedOptions, report.workPerformed || [], margin, y, pageWidth - margin*2);
         y += workPerformedOptions.length * lineHeight + fieldGap;
-
-        // --- PAGE 2 CONTENT ---
-        checkPageBreak(pageHeight); // Force new page if not enough space
-        
+        checkPageBreak(pageHeight); 
         drawTextBox("Hvilke verdier ble reddet? (Skal fylles ut)", report.valuesSaved || '', 40);
-        
         const equipmentOptions = ['Plast', 'Avfukter', 'Lensepumpe', 'Røykvifte', 'Sprinklerstopper', 'Strømaggregat', 'Annet'];
         let yEquip = createCheckboxColumn("Ble det benyttet noe utstyr?", equipmentOptions, report.equipmentUsed || [], margin, y, 80);
         y = yEquip + fieldGap;
-        
         drawTextBox("Beskriv skadeobjektet ved ankomst og arbeidets forløp. (Skal fylles ut)", report.damageDescription || '', 60);
-
-        // --- RVR PERSONNEL TABLE ---
         checkPageBreak(40);
         pdf.setFont("helvetica", "bold").setFontSize(12).text("RVR-personell", margin, y);
         y += lineHeight;
@@ -551,7 +645,6 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
         pdf.text(tableHeader[2], tableCol[2] + 2, y + 5.5);
         pdf.text(tableHeader[3], tableCol[3] + 2, y + 5.5);
         y += 8;
-
         const drawTableRow = (rowData) => {
             checkPageBreak(8);
             pdf.rect(margin, y, pageWidth - margin*2, 8);
@@ -562,23 +655,16 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
             pdf.text(String(rowData[3] || ''), tableCol[3] + 2, y + 5.5);
             y += 8;
         };
-
-        drawTableRow([
-            "På vakt", 
-            report.personnelOnDuty?.station, 
-            report.personnelOnDuty?.count, 
-            report.personnelOnDuty?.hours
-        ]);
-        drawTableRow([
-            "Innkalt", 
-            report.personnelCalledIn?.station, 
-            report.personnelCalledIn?.count, 
-            report.personnelCalledIn?.hours
-        ]);
+        drawTableRow(["På vakt", report.personnelOnDuty?.station, report.personnelOnDuty?.count, report.personnelOnDuty?.hours]);
+        drawTableRow(["Innkalt", report.personnelCalledIn?.station, report.personnelCalledIn?.count, report.personnelCalledIn?.hours]);
         
-        // --- SAVE PDF ---
+        // --- ADD IMAGES AND SAVE ---
+        await addImagesToPdf();
+
+        setDownloadStatus('Lagrer PDF...');
         pdf.save(`RVR-Rapport-${report.locationAddress.replace(/ /g, '_') || 'rapport'}.pdf`);
         setIsDownloading(false);
+        setDownloadStatus('');
     };
 
     const handleEmail = () => {
@@ -602,7 +688,7 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
                     </button>
                     <button onClick={downloadPdf} disabled={isDownloading} className="flex items-center gap-2 bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-400">
                         {isDownloading ? <Loader2 className="animate-spin h-5 w-5 mr-2" /> : <FileDown size={20} className="mr-2" />}
-                        {isDownloading ? 'Genererer...' : 'Lagre som PDF'}
+                        {isDownloading ? downloadStatus : 'Lagre som PDF'}
                     </button>
                 </div>
             </div>
@@ -626,6 +712,19 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
                         </div>
                     ))}
                 </DetailSection>
+
+                {/* --- DISPLAY IMAGES IN ARCHIVE --- */}
+                {report.images && report.images.length > 0 && (
+                    <DetailSection title="Bilder">
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                            {report.images.map((url, index) => (
+                                <a key={index} href={url} target="_blank" rel="noopener noreferrer">
+                                    <img src={url} alt={`Bilde ${index + 1}`} className="w-full h-40 object-cover rounded-md border hover:opacity-80 transition-opacity" />
+                                </a>
+                            ))}
+                        </div>
+                    </DetailSection>
+                )}
             </div>
         </div>
     );
@@ -645,24 +744,24 @@ function InfoModal({ onClose }) {
                 <div className="p-6 space-y-4 overflow-y-auto text-gray-700">
                     <h3 className="font-bold">Følgende føringer gjelder når «lokalt brannvesen» utfører hele RVR-jobben selv:</h3>
                     <ul className="space-y-3">
-                        <InfoListItem>Når lokalt brannvesen er ute på brann eller mindre vannlekkasje og gjør stedet «tørt og røykfritt», kan det skrives RVR-rapport på dette. </InfoListItem>
-                        <InfoListItem>F.eks. en kjøkkenbrann. Dere slukker brannen og setter på røykvifte for å gjøre det røykfritt. Da kan det skrives RVR-rapport på 1 eller 2 mannskap i f.eks. en halvtime eller time.  <strong>Husk!</strong> Godtgjøring gjelder de som utfører RVR og ikke brannbekjempelse. </InfoListItem>
-                        <InfoListItem>Lokalt brannvesen kan iverksette og håndtere hele RVR-oppdraget alene, med det utstyret og de mannskapene dere har tilgjengelig. </InfoListItem>
-                        <InfoListItem>RVR-bil kan rykke ut med mer kompetanse og mer utstyr om oppdraget tilsier det.  Dette avklares med vertskommune. </InfoListItem>
+                        <InfoListItem>Når lokalt brannvesen er ute på brann eller mindre vannlekkasje og gjør stedet «tørt og røykfritt», kan det skrives RVR-rapport på dette.</InfoListItem>
+                        <InfoListItem>F.eks. en kjøkkenbrann. Dere slukker brannen og setter på røykvifte for å gjøre det røykfritt. Da kan det skrives RVR-rapport på 1 eller 2 mannskap i f.eks. en halvtime eller time. <strong>Husk!</strong> Godtgjøring gjelder de som utfører RVR og ikke brannbekjempelse.</InfoListItem>
+                        <InfoListItem>Lokalt brannvesen kan iverksette og håndtere hele RVR-oppdraget alene, med det utstyret og de mannskapene dere har tilgjengelig.</InfoListItem>
+                        <InfoListItem>RVR-bil kan rykke ut med mer kompetanse og mer utstyr om oppdraget tilsier det. Dette avklares med vertskommune.</InfoListItem>
                         <InfoListItem>Lokalt brannvesen må i slike tilfeller også foreta rapportskriving og billedtaking.</InfoListItem>
-                        <InfoListItem>All info må sendes til vaktleder hos vertskommunene for RVR i tilhørende region, som kvalitetssjekker og videresender. </InfoListItem>
-                        <InfoListItem>Vær ærlig på personer og timer. Det blir normalt ikke godkjent 4-6 mannskaper på et mindre RVR-oppdrag (f.eks. mindre vannsuging/røykvifte vil være 1-2 mann). </InfoListItem>
-                        <InfoListItem>Ved større hendelser (større vannlekkasjer eller omfattende branner) vil det kunne være behov for flere mannskaper, men ved slike oppdrag bør uansett RVR-bil fra vertskommune rykke ut. </InfoListItem>
-                        <InfoListItem>Man må skille mellom det kommunale ansvaret (brannslokking, etterslokk, vakthold) og RVR-innsatsen (røykventilering, tildekking, utbæring av innbo etc.). </InfoListItem>
-                         <InfoListItem>Er det i tvil, kontakt vaktleder hos vertskommunen til RVR i den regionen dere tilhører. </InfoListItem>
+                        <InfoListItem>All info må sendes til vaktleder hos vertskommunene for RVR i tilhørende region, som kvalitetssjekker og videresender.</InfoListItem>
+                        <InfoListItem>Vær ærlig på personer og timer. Det blir normalt ikke godkjent 4-6 mannskaper på et mindre RVR-oppdrag (f.eks. mindre vannsuging/røykvifte vil være 1-2 mann).</InfoListItem>
+                        <InfoListItem>Ved større hendelser (større vannlekkasjer eller omfattende branner) vil det kunne være behov for flere mannskaper, men ved slike oppdrag bør uansett RVR-bil fra vertskommune rykke ut.</InfoListItem>
+                        <InfoListItem>Man må skille mellom det kommunale ansvaret (brannslokking, etterslokk, vakthold) og RVR-innsatsen (røykventilering, tildekking, utbæring av innbo etc.).</InfoListItem>
+                         <InfoListItem>Er det i tvil, kontakt vaktleder hos vertskommunen til RVR i den regionen dere tilhører.</InfoListItem>
                     </ul>
-                    <h3 className="font-bold pt-4 border-t">En forutsetning er at oppdrag skal avklares med vaktleder hos vertskommunen før RVR-arbeidet starter: </h3>
+                    <h3 className="font-bold pt-4 border-t">En forutsetning er at oppdrag skal avklares med vaktleder hos vertskommunen før RVR-arbeidet starter:</h3>
                      <ul className="space-y-3">
-                        <InfoListItem>Her avtales det om man gjør det selv eller om vertskommunen for RVR bør rykke ut med RVR-bil og ekstra utstyr. </InfoListItem>
-                        <InfoListItem>Man skal ikke utføre arbeid og deretter sende over rapport uten at dette er avklart. </InfoListItem>
+                        <InfoListItem>Her avtales det om man gjør det selv eller om vertskommunen for RVR bør rykke ut med RVR-bil og ekstra utstyr.</InfoListItem>
+                        <InfoListItem>Man skal ikke utføre arbeid og deretter sende over rapport uten at dette er avklart.</InfoListItem>
                     </ul>
-                    <p className="pt-4 border-t">Rapport fra lokalt brannvesen til vertskommune bør normalt sendes i løpet av 12-24 timer etter hendelsen. </p>
-                    <p className="font-bold">Husk! RVR-oppdrag over 4 timer skal godkjennes av forsikringsselskap. </p>
+                    <p className="pt-4 border-t">Rapport fra lokalt brannvesen til vertskommune bør normalt sendes i løpet av 12-24 timer etter hendelsen.</p>
+                    <p className="font-bold">Husk! RVR-oppdrag over 4 timer skal godkjennes av forsikringsselskap.</p>
                 </div>
                  <div className="p-4 bg-gray-50 border-t"><button onClick={onClose} className="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-md hover:bg-red-700">Lukk</button></div>
             </div>
