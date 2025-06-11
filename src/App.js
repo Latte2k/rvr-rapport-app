@@ -500,6 +500,8 @@ const downloadReportAsPdf = async (reportData) => {
 
         for (const url of reportData.imageUrls) {
             try {
+                // This is a simplified fetch; in reality, CORS can be tricky.
+                // A CORS proxy might be needed if direct fetch fails.
                 const response = await fetch(url);
                 const blob = await response.blob();
                 const reader = new FileReader();
