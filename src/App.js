@@ -10,6 +10,7 @@ import {
     browserLocalPersistence
 } from 'firebase/auth';
 import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2 } from 'lucide-react';
+import { jsPDF } from "jspdf";
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
@@ -339,7 +340,7 @@ function MainApp({ user }) {
                     </div>
                     <div className="bg-white p-6 rounded-lg shadow mb-6 space-y-6">
                         <h2 className="text-lg font-bold border-b pb-2 text-red-800">Arbeidsdetaljer</h2>
-                        <CheckboxGroup legend="Hva slags RVR-arbeid ble utført?" name="workPerformed" options={['Pulversuging', 'Røykventilering', 'Lensing av vann', 'Avfukting/tørking', 'Utkjøring av innbo', 'Tildekking av innbo', 'Tildekking av bygning', 'Brukt flomvernmateriell', 'Sanering/konservering', 'Måling av klorider', 'Strømlevering', 'Flytting til sikkert sted']} value={form.workPerformed} onChange={handleCheckboxChange} />
+                        <CheckboxGroup legend="Hva slags RVR-arbeid ble utført?" name="workPerformed" options={['Pulversuging', 'Røykventilering', 'Lensing av vann', 'Avfukting/tørking', 'Innbo eller utstyr kjørt bort', 'Inventar eller utstyr tildekket med plast', 'Deler av bygningen tildekket med plast', 'Brukt flomvernmateriell', 'Utført sanering-/konservering', 'Utført måling av klorider', 'Strømlevering', 'Inventar eller utstyr flyttet til «sikkert>> sted']} value={form.workPerformed} onChange={handleCheckboxChange} />
                         <div><label htmlFor="valuesSaved" className="block text-sm font-medium text-gray-700 mb-1">Hvilke verdier ble reddet?</label><textarea id="valuesSaved" name="valuesSaved" value={form.valuesSaved} onChange={handleInputChange} rows="3" className="w-full p-2 border border-gray-300 rounded-md"></textarea></div>
                         <CheckboxGroup legend="Benyttet utstyr?" name="equipmentUsed" options={['Plast', 'Avfukter', 'Lensepumpe', 'Røykvifte', 'Sprinklerstopper', 'Strømaggregat', 'Annet']} value={form.equipmentUsed} onChange={handleCheckboxChange} />
                         <div><label htmlFor="damageDescription" className="block text-sm font-medium text-gray-700 mb-1">Beskriv skadeobjekt og forløp</label><textarea id="damageDescription" name="damageDescription" value={form.damageDescription} onChange={handleInputChange} rows="5" className="w-full p-2 border border-gray-300 rounded-md"></textarea></div>
@@ -372,66 +373,217 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
 
     const downloadPdf = async () => {
         setIsDownloading(true);
-        if (!window.jspdf) {
-            alert("PDF-bibliotek ikke lastet. Prøv å laste siden på nytt.");
-            setIsDownloading(false);
-            return;
-        }
-        const { jsPDF } = window.jspdf;
         const pdf = new jsPDF('p', 'mm', 'a4');
-        let y = 15;
         const margin = 10;
+        const pageHeight = pdf.internal.pageSize.getHeight();
         const pageWidth = pdf.internal.pageSize.getWidth();
-        const boxWidth = pageWidth - margin * 2;
-        const addText = (text, x, yPos, options) => {
-            if (!text) return yPos;
-            const lines = pdf.splitTextToSize(String(text), options?.maxWidth || (pageWidth - x - margin));
-            pdf.text(lines, x, yPos, options);
-            return yPos + (lines.length * 5);
-        };
-        const drawBox = (x, y, width, height) => pdf.rect(x, y, width, height);
-        const drawCheckbox = (x, y, checked) => {
-            pdf.rect(x, y - 2.5, 3, 3);
-            if (checked) {
-                pdf.text('X', x + 0.5, y);
+        let y = 15;
+        const lineHeight = 6;
+        const fieldGap = 8;
+        
+        // --- PDF HELPER FUNCTIONS ---
+        const checkPageBreak = (spaceNeeded = 20) => {
+            if (y + spaceNeeded > pageHeight - margin) {
+                pdf.addPage();
+                y = 15;
             }
         };
 
-        // Header
-        pdf.setFont("helvetica", "bold").setFontSize(20);
-        pdf.text("RVR-RAPPORT", pageWidth / 2, y, { align: 'center' });
-        pdf.setFontSize(10).text("Restverdiredning", pageWidth / 2, y + 5, { align: 'center' });
-        y += 20;
+        const drawHeader = () => {
+             pdf.setFont("helvetica", "bold").setFontSize(24).text("RVR", margin, y);
+             pdf.setFont("helvetica", "normal").setFontSize(10).text("Restverdiredning", margin, y + 5);
+             pdf.setFont("helvetica", "bold").setFontSize(24).text("RVR-RAPPORT", pageWidth - margin, y, { align: 'right' });
+             pdf.setFont("helvetica", "normal").setFontSize(10).text("Restverdiredning", pageWidth - margin, y + 5, { align: 'right' });
+             y += 20;
+        };
 
-        // General Info Box
-        drawBox(margin, y, boxWidth, 30);
-        addText(`Dato: ${report.reportDate || ''}`, margin + 2, y + 7);
-        addText(`Tidspunkt for start: ${report.startTime || ''}`, margin + 80, y + 7);
-        addText(`Skadestedets adresse: ${report.locationAddress || ''}`, margin + 2, y + 14);
-        addText(`Kommune: ${report.municipality || ''}`, margin + 80, y + 14);
-        addText(`Utrykningsleder / RVR-ansvarlig: ${report.responseLeader || ''}`, margin + 2, y + 21);
-        y += 35;
+        const drawCheckbox = (x, yPos, text, isChecked) => {
+            pdf.setDrawColor(0);
+            pdf.rect(x, yPos - 3.5, 4, 4); // Draw the box
+            if (isChecked) {
+                pdf.setFontSize(10).text('X', x + 0.8, yPos);
+            }
+            pdf.setFont("helvetica", "normal").setFontSize(10).text(text, x + 6, yPos);
+        };
         
-        // Stakeholders
-        pdf.setFont("helvetica", "bold").setFontSize(12).text("Forsikringstaker og -selskap", margin, y); y += 5;
+        const drawTextBox = (label, content, customHeight) => {
+             checkPageBreak(customHeight || 30);
+             pdf.setFont("helvetica", "bold").setFontSize(10).text(label, margin, y);
+             y += 5;
+             const textLines = pdf.splitTextToSize(content || 'Ikke spesifisert', pageWidth - margin * 2 - 4);
+             const boxHeight = customHeight || (textLines.length * (lineHeight-1)) + 6;
+             checkPageBreak(boxHeight + 5);
+             pdf.setDrawColor(180, 180, 180);
+             pdf.rect(margin, y, pageWidth - margin * 2, boxHeight);
+             pdf.setFont("helvetica", "normal").setFontSize(10).text(textLines, margin + 2, y + 5);
+             y += boxHeight + fieldGap;
+        };
+
+
+        // --- START PDF GENERATION ---
+        
+        drawHeader();
+
+        // --- GENERAL INFO ---
+        pdf.setFont("helvetica", "normal").setFontSize(10);
+        pdf.text(`Dato: ${report.reportDate || ''}`, margin, y);
+        pdf.text(`Skadestedets adresse: ${report.locationAddress || ''}`, margin, y + fieldGap);
+        pdf.text(`Tidspunkt for start RVR-oppdrag: ${report.startTime || ''}`, pageWidth / 2, y);
+        pdf.text(`Kommune: ${report.municipality || ''}`, pageWidth / 2, y + fieldGap);
+        y += fieldGap * 2;
+        pdf.text(`Utrykningsleder / RVR-ansvarlig på stedet: ${report.responseLeader || ''}`, margin, y);
+        y += fieldGap + 2;
+
+        // --- STAKEHOLDERS ---
+        pdf.setFont("helvetica", "bold").setFontSize(12).text("Forsikringstaker og- selskap", margin, y);
+        y += lineHeight;
         (report.stakeholders || []).forEach((s, i) => {
-            y = addText(`${i+1}. Navn: ${s.name || ''}`, margin, y);
-            drawCheckbox(margin + 50, y-3, s.type === 'Eier'); pdf.text('Eier', margin + 54, y-2.5);
-            drawCheckbox(margin + 70, y-3, s.type === 'Leier'); pdf.text('Leier', margin + 74, y-2.5);
-            y += 7;
-            y = addText(`Adresse: ${s.address || ''}`, margin, y);
-            y = addText(`Tlf: ${s.phone || ''}`, margin, y);
-            y = addText(`Forsikringsselskap: ${s.insurance || ''}`, margin, y);
-            y += 5;
+            checkPageBreak(35);
+            pdf.setFont("helvetica", "bold").setFontSize(10).text(`${i + 1}. Navn: `, margin, y);
+            pdf.setFont("helvetica", "normal").text(s.name || '', margin + 15, y);
+            drawCheckbox(margin + 90, y, 'Eier', s.type === 'Eier');
+            drawCheckbox(margin + 110, y, 'Leier', s.type === 'Leier');
+            y += fieldGap;
+            pdf.setFont("helvetica", "bold").text('TLF: ', margin, y);
+            pdf.setFont("helvetica", "normal").text(s.phone || '', margin + 15, y);
+            y += fieldGap;
+            pdf.setFont("helvetica", "bold").text('Adresse: ', margin, y);
+            pdf.setFont("helvetica", "normal").text(s.address || '', margin + 18, y);
+            y += fieldGap;
+            pdf.setFont("helvetica", "bold").text('Forsikringsselskap: ', margin, y);
+            pdf.setFont("helvetica", "normal").text(s.insurance || '', margin + 40, y);
+            y += fieldGap + 2;
         });
 
-        pdf.save(`RVR-Rapport-${report.locationAddress.replace(/ /g, '_')}.pdf`);
+        // --- OPPDRAG OG ARBEID ---
+        checkPageBreak(10);
+        pdf.line(margin, y, pageWidth - margin, y); // separator
+        y += fieldGap;
+        
+        pdf.setFont("helvetica", "bold").setFontSize(12).text("Oppdrag og arbeid", margin, y);
+        y += lineHeight;
+
+        const createCheckboxColumn = (title, options, selected, x, startY, colWidth) => {
+            let yPos = startY;
+            pdf.setFont("helvetica", "bold").setFontSize(10).text(title, x, yPos);
+            yPos += lineHeight;
+            options.forEach(opt => {
+                checkPageBreak(8);
+                drawCheckbox(x, yPos, opt, selected.includes(opt));
+                yPos += lineHeight;
+            });
+            return yPos;
+        };
+
+        const sectorOptions = ['Privat (hus og hytte)', 'Borettslag, sameie, blokk', 'Næringsbygg, kjøpesenter, restaurant, driftsbygning', 'Offentlig - kommune, fylke, stat, forsvar'];
+        const buildingTypeOptions = ['Enebolig', 'Leilighet, borettslag, sameie, blokk', 'Hytte', 'Landbruksbygg', 'Industri', 'Næringsvirksomhet', 'Hotell, overnattingssted', 'Skole, barnehage, idrettshall', 'Annet'];
+        
+        let yCol1 = createCheckboxColumn("Hvilken sektor gjelder det?", sectorOptions, report.sector || [], margin, y, 80);
+        let yCol2 = createCheckboxColumn("Hvilken type bygg er det?", buildingTypeOptions, report.buildingType || [], margin + 95, y, 80);
+        y = Math.max(yCol1, yCol2) + fieldGap;
+
+        checkPageBreak(25);
+        pdf.setFont("helvetica", "bold").setFontSize(10).text("Oppgi skadetype:", margin, y);
+        drawCheckbox(margin + 40, y, "Brannskade", (report.damageType || []).includes("Brannskade"));
+        drawCheckbox(margin + 75, y, "Vannskade", (report.damageType || []).includes("Vannskade"));
+        drawCheckbox(margin + 110, y, "Annet", (report.damageType || []).includes("Annet"));
+        y += fieldGap;
+        
+        // --- DAMAGE DETAILS ---
+        const detailFields1 = [
+            { label: 'Hvor mange etasjer har bygget?', value: report.buildingFloors },
+            { label: 'Hvor stor er antatt grunnflate i m2?', value: report.baseArea },
+            { label: 'Hvor mange rom er skadet?', value: report.damagedRooms },
+        ];
+        const detailFields2 = [
+            { label: 'Hvor mange etasjer er skadet?', value: report.damagedFloors },
+            { label: 'Hvor mange kvadratmeter er antatt skadet?', value: report.damagedArea },
+        ];
+        
+        detailFields1.forEach(f => {
+            checkPageBreak(8);
+            pdf.setFont("helvetica", "bold").text(f.label, margin, y);
+            pdf.setFont("helvetica", "normal").text(String(f.value || ''), margin + 70, y);
+            y += lineHeight;
+        });
+         detailFields2.forEach(f => {
+            checkPageBreak(8);
+            pdf.setFont("helvetica", "bold").text(f.label, margin + 95, y - (lineHeight * detailFields1.length));
+            pdf.setFont("helvetica", "normal").text(String(f.value || ''), margin + 175, y - (lineHeight * detailFields1.length));
+            y += lineHeight;
+        });
+        y -= lineHeight * (detailFields1.length -1);
+
+
+        // --- WORK PERFORMED ---
+        checkPageBreak(60);
+        const workPerformedOptions = [
+            'Pulversuging', 'Røykventilering', 'Lensing av vann', 'Avfukting/tørking', 'Innbo eller utstyr kjørt bort', 
+            'Inventar eller utstyr tildekket med plast', 'Deler av bygningen tildekket med plast', 'Brukt flomvernmateriell', 
+            'Utført sanering-/konservering', 'Utført måling av klorider', 'Strømlevering', 'Inventar eller utstyr flyttet til «sikkert>> sted'
+        ];
+        createCheckboxColumn("Hva slags RVR-arbeid ble utført?", workPerformedOptions, report.workPerformed || [], margin, y, pageWidth - margin*2);
+        y += workPerformedOptions.length * lineHeight + fieldGap;
+
+        // --- PAGE 2 CONTENT ---
+        checkPageBreak(pageHeight); // Force new page if not enough space
+        
+        drawTextBox("Hvilke verdier ble reddet? (Skal fylles ut)", report.valuesSaved || '', 40);
+        
+        const equipmentOptions = ['Plast', 'Avfukter', 'Lensepumpe', 'Røykvifte', 'Sprinklerstopper', 'Strømaggregat', 'Annet'];
+        let yEquip = createCheckboxColumn("Ble det benyttet noe utstyr?", equipmentOptions, report.equipmentUsed || [], margin, y, 80);
+        y = yEquip + fieldGap;
+        
+        drawTextBox("Beskriv skadeobjektet ved ankomst og arbeidets forløp. (Skal fylles ut)", report.damageDescription || '', 60);
+
+        // --- RVR PERSONNEL TABLE ---
+        checkPageBreak(40);
+        pdf.setFont("helvetica", "bold").setFontSize(12).text("RVR-personell", margin, y);
+        y += lineHeight;
+        const tableCol = [margin, margin + 50, margin + 110, margin + 140];
+        const tableHeader = ["Vaktmannskap", "Brannvesen / brannstasjon", "Ant. mannskap", "Ant. timer"];
+        pdf.setDrawColor(0);
+        pdf.setFillColor(230, 230, 230);
+        pdf.rect(margin, y, pageWidth - margin*2, 8, 'F');
+        pdf.setFont("helvetica", "bold").setFontSize(10);
+        pdf.text(tableHeader[0], tableCol[0] + 2, y + 5.5);
+        pdf.text(tableHeader[1], tableCol[1] + 2, y + 5.5);
+        pdf.text(tableHeader[2], tableCol[2] + 2, y + 5.5);
+        pdf.text(tableHeader[3], tableCol[3] + 2, y + 5.5);
+        y += 8;
+
+        const drawTableRow = (rowData) => {
+            checkPageBreak(8);
+            pdf.rect(margin, y, pageWidth - margin*2, 8);
+            pdf.setFont("helvetica", "normal").setFontSize(10);
+            pdf.text(String(rowData[0] || ''), tableCol[0] + 2, y + 5.5);
+            pdf.text(String(rowData[1] || ''), tableCol[1] + 2, y + 5.5);
+            pdf.text(String(rowData[2] || ''), tableCol[2] + 2, y + 5.5);
+            pdf.text(String(rowData[3] || ''), tableCol[3] + 2, y + 5.5);
+            y += 8;
+        };
+
+        drawTableRow([
+            "På vakt", 
+            report.personnelOnDuty?.station, 
+            report.personnelOnDuty?.count, 
+            report.personnelOnDuty?.hours
+        ]);
+        drawTableRow([
+            "Innkalt", 
+            report.personnelCalledIn?.station, 
+            report.personnelCalledIn?.count, 
+            report.personnelCalledIn?.hours
+        ]);
+        
+        // --- SAVE PDF ---
+        pdf.save(`RVR-Rapport-${report.locationAddress.replace(/ /g, '_') || 'rapport'}.pdf`);
         setIsDownloading(false);
     };
 
     const handleEmail = () => {
-        const subject = `RVR Rapport fra Larvik brann og redning.`;
-        const body = `Hei, her er en RVR rapport fra Larvik brann og redning, ligger vedlagt.`;
+        const subject = `RVR Rapport fra Larvik brann og redning. Adresse: ${report.locationAddress}`;
+        const body = `Hei,\n\nVedlagt ligger RVR-rapport fra hendelse på adressen ${report.locationAddress}.\n\nVennligst se vedlegg for alle detaljer.\n\n\nMvh\nLarvik brann og redning`;
         window.location.href = `mailto:${recipientEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     };
 
@@ -493,28 +645,27 @@ function InfoModal({ onClose }) {
                 <div className="p-6 space-y-4 overflow-y-auto text-gray-700">
                     <h3 className="font-bold">Følgende føringer gjelder når «lokalt brannvesen» utfører hele RVR-jobben selv:</h3>
                     <ul className="space-y-3">
-                        <InfoListItem>Når lokalt brannvesen er ute på brann eller mindre vannlekkasje og gjør stedet «tørt og røykfritt», kan det skrives RVR-rapport på dette.</InfoListItem>
-                        <InfoListItem>F.eks. en kjøkkenbrann. Dere slukker brannen og setter på røykvifte for å gjøre det røykfritt. Da kan det skrives RVR-rapport på 1 eller 2 mannskap i f.eks. en halvtime eller time. <strong>Husk!</strong> Godtgjøring gjelder de som utfører RVR og ikke brannbekjempelse.</InfoListItem>
-                        <InfoListItem>Lokalt brannvesen kan iverksette og håndtere hele RVR-oppdraget alene, med det utstyret og de mannskapene dere har tilgjengelig.</InfoListItem>
-                        <InfoListItem>RVR-bil kan rykke ut med mer kompetanse og mer utstyr om oppdraget tilsier det. Dette avklares med vertskommune.</InfoListItem>
+                        <InfoListItem>Når lokalt brannvesen er ute på brann eller mindre vannlekkasje og gjør stedet «tørt og røykfritt», kan det skrives RVR-rapport på dette. </InfoListItem>
+                        <InfoListItem>F.eks. en kjøkkenbrann. Dere slukker brannen og setter på røykvifte for å gjøre det røykfritt. Da kan det skrives RVR-rapport på 1 eller 2 mannskap i f.eks. en halvtime eller time.  <strong>Husk!</strong> Godtgjøring gjelder de som utfører RVR og ikke brannbekjempelse. </InfoListItem>
+                        <InfoListItem>Lokalt brannvesen kan iverksette og håndtere hele RVR-oppdraget alene, med det utstyret og de mannskapene dere har tilgjengelig. </InfoListItem>
+                        <InfoListItem>RVR-bil kan rykke ut med mer kompetanse og mer utstyr om oppdraget tilsier det.  Dette avklares med vertskommune. </InfoListItem>
                         <InfoListItem>Lokalt brannvesen må i slike tilfeller også foreta rapportskriving og billedtaking.</InfoListItem>
-                        <InfoListItem>All info må sendes til vaktleder hos vertskommunene for RVR i tilhørende region, som kvalitetssjekker og videresender.</InfoListItem>
-                        <InfoListItem>Vær ærlig på personer og timer. Det blir normalt ikke godkjent 4-6 mannskaper på et mindre RVR-oppdrag (f.eks. mindre vannsuging/røykvifte vil være 1-2 mann).</InfoListItem>
-                        <InfoListItem>Ved større hendelser (større vannlekkasjer eller omfattende branner) vil det kunne være behov for flere mannskaper, men ved slike oppdrag bør uansett RVR-bil fra vertskommune rykke ut.</InfoListItem>
-                        <InfoListItem>Man må skille mellom det kommunale ansvaret (brannslokking, etterslokk, vakthold) og RVR-innsatsen (røykventilering, tildekking, utbæring av innbo etc.).</InfoListItem>
-                         <InfoListItem>Er det i tvil, kontakt vaktleder hos vertskommunen til RVR i den regionen dere tilhører.</InfoListItem>
+                        <InfoListItem>All info må sendes til vaktleder hos vertskommunene for RVR i tilhørende region, som kvalitetssjekker og videresender. </InfoListItem>
+                        <InfoListItem>Vær ærlig på personer og timer. Det blir normalt ikke godkjent 4-6 mannskaper på et mindre RVR-oppdrag (f.eks. mindre vannsuging/røykvifte vil være 1-2 mann). </InfoListItem>
+                        <InfoListItem>Ved større hendelser (større vannlekkasjer eller omfattende branner) vil det kunne være behov for flere mannskaper, men ved slike oppdrag bør uansett RVR-bil fra vertskommune rykke ut. </InfoListItem>
+                        <InfoListItem>Man må skille mellom det kommunale ansvaret (brannslokking, etterslokk, vakthold) og RVR-innsatsen (røykventilering, tildekking, utbæring av innbo etc.). </InfoListItem>
+                         <InfoListItem>Er det i tvil, kontakt vaktleder hos vertskommunen til RVR i den regionen dere tilhører. </InfoListItem>
                     </ul>
-                    <h3 className="font-bold pt-4 border-t">En forutsetning er at oppdrag skal avklares med vaktleder hos vertskommunen før RVR-arbeidet starter:</h3>
+                    <h3 className="font-bold pt-4 border-t">En forutsetning er at oppdrag skal avklares med vaktleder hos vertskommunen før RVR-arbeidet starter: </h3>
                      <ul className="space-y-3">
-                        <InfoListItem>Her avtales det om man gjør det selv eller om vertskommunen for RVR bør rykke ut med RVR-bil og ekstra utstyr.</InfoListItem>
-                        <InfoListItem>Man skal ikke utføre arbeid og deretter sende over rapport uten at dette er avklart.</InfoListItem>
+                        <InfoListItem>Her avtales det om man gjør det selv eller om vertskommunen for RVR bør rykke ut med RVR-bil og ekstra utstyr. </InfoListItem>
+                        <InfoListItem>Man skal ikke utføre arbeid og deretter sende over rapport uten at dette er avklart. </InfoListItem>
                     </ul>
-                    <p className="pt-4 border-t">Rapport fra lokalt brannvesen til vertskommune bør normalt sendes i løpet av 12-24 timer etter hendelsen.</p>
-                    <p className="font-bold">Husk! RVR-oppdrag over 4 timer skal godkjennes av forsikringsselskap.</p>
+                    <p className="pt-4 border-t">Rapport fra lokalt brannvesen til vertskommune bør normalt sendes i løpet av 12-24 timer etter hendelsen. </p>
+                    <p className="font-bold">Husk! RVR-oppdrag over 4 timer skal godkjennes av forsikringsselskap. </p>
                 </div>
                  <div className="p-4 bg-gray-50 border-t"><button onClick={onClose} className="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-md hover:bg-red-700">Lukk</button></div>
             </div>
         </div>
     );
 }
-
