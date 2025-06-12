@@ -10,7 +10,7 @@ import {
     setPersistence,
     browserLocalPersistence
 } from 'firebase/auth';
-import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2, Camera, Upload } from 'lucide-react';
+import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2, Upload } from 'lucide-react';
 import { jsPDF } from "jspdf";
 
 // --- Firebase Configuration ---
@@ -18,7 +18,7 @@ const firebaseConfig = {
   apiKey: "AIzaSyDkUF1zg9-UdgxUYk89EtYGvrq2EFN_sZQ",
   authDomain: "rvr-rapport.firebaseapp.com",
   projectId: "rvr-rapport",
-  storageBucket: "rvr-rapport.appspot.com",
+  storageBucket: "rvr-rapport.firebasestorage.app", // Korrigert til den bekreftede bøtten
   messagingSenderId: "91875572439",
   appId: "1:91875572439:web:c3bf441eb04ebe653b0e92",
   measurementId: "G-132TJ4NRMG"
@@ -27,7 +27,7 @@ const firebaseConfig = {
 // --- Initialize Firebase ---
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
-const storage = getStorage(app); // Initialize Storage
+const storage = getStorage(app);
 const auth = getAuth(app);
 
 // --- Helper Components ---
@@ -179,6 +179,7 @@ function MainApp({ user }) {
     const [selectedReport, setSelectedReport] = useState(null);
     const [isArchiveLoading, setIsArchiveLoading] = useState(false);
     const [isInfoOpen, setIsInfoOpen] = useState(false);
+    const [lastError, setLastError] = useState(null);
 
     useEffect(() => {
         // Clean up object URLs on component unmount
@@ -203,6 +204,7 @@ function MainApp({ user }) {
                 }
             } catch (error) {
                 console.error("Firestore read error:", error);
+                setLastError(error);
                 showModal("Feil", "Kunne ikke laste innstillinger. Sjekk sikkerhetsregler i Firebase.");
             } finally {
                 setIsLoading(false);
@@ -247,7 +249,10 @@ function MainApp({ user }) {
             await setDoc(doc(db, "rvrSettings", "config"), { recipientEmail: tempAdminEmail });
             setRecipientEmail(tempAdminEmail); setIsAdminMode(false);
             showModal("Suksess", "Mottaker-e-post er oppdatert!");
-        } catch (error) { showModal("Feil", `Kunne ikke lagre e-post. Feil: ${error.message}`); }
+        } catch (error) { 
+            setLastError(error);
+            showModal("Feil", `Kunne ikke lagre e-post. Feil: ${error.message}`); 
+        }
     };
 
     const openArchive = async () => {
@@ -257,7 +262,10 @@ function MainApp({ user }) {
             const querySnapshot = await getDocs(q);
             const reports = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             setArchivedReports(reports);
-        } catch (error) { showModal("Arkivfeil", "Kunne ikke hente rapporter."); } 
+        } catch (error) { 
+            setLastError(error);
+            showModal("Arkivfeil", "Kunne ikke hente rapporter."); 
+        } 
         finally { setIsArchiveLoading(false); }
     };
     
@@ -275,7 +283,6 @@ function MainApp({ user }) {
     const handleRemoveImage = (index) => {
         setForm(prev => {
             const newImages = [...prev.images];
-            // Revoke the object URL to prevent memory leaks
             URL.revokeObjectURL(newImages[index].preview);
             newImages.splice(index, 1);
             return { ...prev, images: newImages };
@@ -289,28 +296,52 @@ function MainApp({ user }) {
         }
         
         setIsSubmitting(true);
+        setLastError(null);
         setSubmissionStatus("Lagrer rapportdata...");
+        let docRef;
 
         try {
-            // Step 1: Create the report document in Firestore to get an ID.
-            const reportData = { ...form, images: [], submittedBy: user.email, createdAt: serverTimestamp() };
-            delete reportData.images; // Remove local File objects before saving
-
-            const docRef = await addDoc(collection(db, "reports"), reportData);
+            const { images, ...dataToSave } = form; 
             
-            // Step 2: Upload images to Storage if any exist.
-            const imageUrls = [];
+            docRef = await addDoc(collection(db, "reports"), {
+                ...dataToSave,
+                images: [],
+                submittedBy: user.email,
+                createdAt: serverTimestamp()
+            });
+            console.log("Rapportdokument opprettet med ID:", docRef.id);
+            
             if (form.images.length > 0) {
-                setSubmissionStatus(`Laster opp ${form.images.length} bilder...`);
+                setSubmissionStatus(`Laster opp ${form.images.length} bilde(r)...`);
                 
-                const uploadPromises = form.images.map(image => {
+                const uploadPromises = form.images.map((image, index) => {
                     const imageRef = ref(storage, `reports/${docRef.id}/${image.file.name}`);
-                    return uploadBytesResumable(imageRef, image.file).then(snapshot => getDownloadURL(snapshot.ref));
+                    console.log(`Starter opplasting for bilde ${index + 1}: ${image.file.name}`);
+                    
+                    return new Promise((resolve, reject) => {
+                        const uploadTask = uploadBytesResumable(imageRef, image.file);
+                        uploadTask.on('state_changed', 
+                            (snapshot) => {
+                                const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                                console.log(`Opplasting for ${image.file.name} er ${progress}% ferdig`);
+                            }, 
+                            (error) => {
+                                console.error(`Opplastingsfeil for ${image.file.name}:`, error);
+                                reject(error); // Reject the promise on error
+                            }, 
+                            () => {
+                                getDownloadURL(uploadTask.snapshot.ref).then(downloadURL => {
+                                    console.log(`Fil tilgjengelig på`, downloadURL);
+                                    resolve(downloadURL); // Resolve the promise with the URL
+                                });
+                            }
+                        );
+                    });
                 });
+                
+                const imageUrls = await Promise.all(uploadPromises);
+                console.log("Alle opplastinger ferdige. URLer:", imageUrls);
 
-                imageUrls.push(...await Promise.all(uploadPromises));
-
-                // Step 3: Update the document with the image URLs.
                 setSubmissionStatus("Oppdaterer rapport med bilder...");
                 await updateDoc(docRef, { images: imageUrls });
             }
@@ -318,8 +349,9 @@ function MainApp({ user }) {
             showModal("Suksess!", "Rapporten er lagret i arkivet.", () => resetForm(false));
 
         } catch (error) {
-            console.error("Submit Error: ", error);
-            showModal("Feil ved lagring", `Noe gikk galt. Rapporten ble ikke lagret. Feil: ${error.message}`);
+            console.error("Feil under lagringsprosessen:", error);
+            setLastError(error);
+            showModal("Feil ved lagring", `Noe gikk galt under lagringen. Rapporten ble kanskje ikke lagret korrekt. Feil: ${error.message}.`);
         } finally {
             setIsSubmitting(false);
             setSubmissionStatus('');
@@ -340,18 +372,17 @@ function MainApp({ user }) {
     
     return (
         <div className="bg-gray-50 min-h-screen font-sans">
-            {/* --- All Modals --- */}
             {modal.isOpen && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm text-center">{modal.onConfirm ? <AlertTriangle className="h-12 w-12 text-yellow-500 mx-auto mb-4" /> : <ShieldCheck className="h-12 w-12 text-green-500 mx-auto mb-4" />}<h2 className="text-xl font-bold text-gray-800 mb-2">{modal.title}</h2><p className="text-gray-600 mb-6">{modal.message}</p><div className={`flex ${modal.onConfirm ? 'justify-between' : 'justify-center'}`}>{modal.onConfirm && <button onClick={closeModal} className="bg-gray-200 text-gray-800 font-bold py-2 px-6 rounded-md">Avbryt</button>}<button onClick={handleConfirm} className="bg-red-600 text-white font-bold py-2 px-6 rounded-md">{modal.onConfirm ? 'Bekreft' : 'OK'}</button></div></div></div>)}
             {isPasswordPromptOpen && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><form onSubmit={handlePasswordSubmit} className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm"><div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Admin-pålogging</h2><button type="button" onClick={() => setIsPasswordPromptOpen(false)}><X size={24} /></button></div><p className="text-sm text-gray-600 mb-4">Skriv inn passord.</p><div><label htmlFor="password">Passord</label><input type="password" id="password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} className={`w-full p-2 border ${passwordError ? 'border-red-500' : 'border-gray-300'} rounded-md`} autoFocus/>{passwordError && <p className="text-red-500 text-xs mt-1">{passwordError}</p>}</div><button type="submit" className="w-full mt-4 bg-red-600 text-white font-bold py-2 px-4 rounded-md flex items-center justify-center"><KeyRound size={18} className="mr-2" /> Logg inn</button></form></div>)}
             {isAdminMode && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-md"><div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Admin-innstillinger</h2><button onClick={() => setIsAdminMode(false)}><X size={24} /></button></div><div><label htmlFor="adminEmail">Mottakerens e-post</label><input type="email" id="adminEmail" value={tempAdminEmail} onChange={(e) => setTempAdminEmail(e.target.value)} className="w-full p-2 border border-gray-300 rounded-md"/></div><button onClick={saveAdminEmail} className="w-full mt-4 bg-red-600 text-white font-bold py-2 px-4 rounded-md flex items-center justify-center"><Save size={18} className="mr-2" /> Lagre</button></div></div>)}
             {isArchiveOpen && (<div className="fixed inset-0 bg-white z-40 p-4 sm:p-6 lg:p-8"><div className="max-w-4xl mx-auto h-full flex flex-col"><div className="flex justify-between items-center mb-4 pb-4 border-b"><h2 className="text-2xl font-bold text-red-800">Rapportarkiv</h2><button onClick={() => { setIsArchiveOpen(false); setSelectedReport(null); }} className="p-2 text-gray-600 hover:text-red-700"><X size={28} /></button></div>{isArchiveLoading ? (<div className="flex-grow flex items-center justify-center"><Loader2 className="h-12 w-12 animate-spin text-red-600" /></div>) : selectedReport ? (<ReportDetailView report={selectedReport} onBack={() => setSelectedReport(null)} recipientEmail={recipientEmail} />) : (<ArchiveListView reports={archivedReports} onSelectReport={setSelectedReport} />)}</div></div>)}
-            {isInfoOpen && <InfoModal onClose={() => setIsInfoOpen(false)} />}
+            {isInfoOpen && <InfoModal onClose={() => setIsInfoOpen(false)} error={lastError} />}
             
             <header className="bg-red-700 text-white shadow-md sticky top-0 z-20">
                 <div className="container mx-auto px-4 py-3 flex justify-between items-center">
                     <h1 className="text-xl md:text-2xl font-bold">RVR Rapport</h1>
                     <div className="flex items-center gap-1">
-                        <button onClick={() => setIsInfoOpen(true)} className="p-2 rounded-full hover:bg-red-600 transition-colors" title="Informasjon"><Info size={24} /></button>
+                        <button onClick={() => setIsInfoOpen(true)} className="p-2 rounded-full hover:bg-red-600 transition-colors" title="Feilsøking"><Info size={24} /></button>
                         <button onClick={openArchive} className="p-2 rounded-full hover:bg-red-600 transition-colors" title="Arkiv"><Archive size={24} /></button>
                         <button onClick={() => setIsPasswordPromptOpen(true)} className="p-2 rounded-full hover:bg-red-600 transition-colors" title="Admin-innstillinger"><UserCog size={24} /></button>
                         <button onClick={handleLogout} className="p-2 rounded-full hover:bg-red-600 transition-colors" title="Logg ut"><LogOut size={24} /></button>
@@ -361,7 +392,6 @@ function MainApp({ user }) {
             
             <main className="container mx-auto p-4 pb-24">
                 <form onSubmit={(e) => e.preventDefault()}>
-                    {/* ... other form sections ... */}
                      <div className="bg-white p-6 rounded-lg shadow mb-6">
                         <h2 className="text-lg font-bold border-b pb-2 mb-4 text-red-800">Generell Informasjon</h2>
                         <div className="grid md:grid-cols-2 gap-x-6 gap-y-4">
@@ -399,7 +429,6 @@ function MainApp({ user }) {
                         <div><label htmlFor="damageDescription" className="block text-sm font-medium text-gray-700 mb-1">Beskriv skadeobjekt og forløp</label><textarea id="damageDescription" name="damageDescription" value={form.damageDescription} onChange={handleInputChange} rows="5" className="w-full p-2 border border-gray-300 rounded-md"></textarea></div>
                     </div>
 
-                    {/* --- NEW IMAGE UPLOAD SECTION --- */}
                     <div className="bg-white p-6 rounded-lg shadow mb-6">
                         <h2 className="text-lg font-bold border-b pb-2 mb-4 text-red-800">Bilder</h2>
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
@@ -458,12 +487,10 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
         const lineHeight = 6;
         const fieldGap = 8;
         
-        // --- PDF HELPER FUNCTIONS ---
         const checkPageBreak = (spaceNeeded = 20) => {
             if (y + spaceNeeded > pageHeight - margin) {
                 pdf.addPage();
                 y = 15;
-                 // Optional: Add headers to new pages
             }
         };
 
@@ -477,7 +504,7 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
 
         const drawCheckbox = (x, yPos, text, isChecked) => {
             pdf.setDrawColor(0);
-            pdf.rect(x, yPos - 3.5, 4, 4); // Draw the box
+            pdf.rect(x, yPos - 3.5, 4, 4);
             if (isChecked) {
                 pdf.setFontSize(10).text('X', x + 0.8, yPos);
             }
@@ -500,11 +527,11 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
         const addImagesToPdf = async () => {
             if (!report.images || report.images.length === 0) return;
             
-            checkPageBreak(pageHeight); // Start images on a new page
+            checkPageBreak(pageHeight);
             pdf.setFont("helvetica", "bold").setFontSize(14).text("Vedlegg: Bilder", margin, y);
             y += 15;
 
-            setDownloadStatus(`Laster ned ${report.images.length} bilder...`);
+            setDownloadStatus(`Laster ned ${report.images.length} bilde(r)...`);
 
             for (let i = 0; i < report.images.length; i++) {
                 const imageUrl = report.images[i];
@@ -538,12 +565,8 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
             }
         };
 
-        // --- START PDF GENERATION ---
         setDownloadStatus('Bygger rapporttekst...');
         drawHeader();
-
-        // [The existing code for drawing the text part of the report goes here]
-        // (Identical to previous version, so omitted for brevity)
         pdf.setFont("helvetica", "normal").setFontSize(10);
         pdf.text(`Dato: ${report.reportDate || ''}`, margin, y);
         pdf.text(`Skadestedets adresse: ${report.locationAddress || ''}`, margin, y + fieldGap);
@@ -576,7 +599,7 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
         y += fieldGap;
         pdf.setFont("helvetica", "bold").setFontSize(12).text("Oppdrag og arbeid", margin, y);
         y += lineHeight;
-        const createCheckboxColumn = (title, options, selected, x, startY, colWidth) => {
+        const createCheckboxColumn = (title, options, selected, x, startY) => {
             let yPos = startY;
             pdf.setFont("helvetica", "bold").setFontSize(10).text(title, x, yPos);
             yPos += lineHeight;
@@ -585,10 +608,9 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
         };
         const sectorOptions = ['Privat (hus og hytte)', 'Borettslag, sameie, blokk', 'Næringsbygg, kjøpesenter, restaurant, driftsbygning', 'Offentlig - kommune, fylke, stat, forsvar'];
         const buildingTypeOptions = ['Enebolig', 'Leilighet, borettslag, sameie, blokk', 'Hytte', 'Landbruksbygg', 'Industri', 'Næringsvirksomhet', 'Hotell, overnattingssted', 'Skole, barnehage, idrettshall', 'Annet'];
-        let yCol1 = createCheckboxColumn("Hvilken sektor gjelder det?", sectorOptions, report.sector || [], margin, y, 80);
-        let yCol2 = createCheckboxColumn("Hvilken type bygg er det?", buildingTypeOptions, report.buildingType || [], margin + 95, y, 80);
+        let yCol1 = createCheckboxColumn("Hvilken sektor gjelder det?", sectorOptions, report.sector || [], margin, y);
+        let yCol2 = createCheckboxColumn("Hvilken type bygg er det?", buildingTypeOptions, report.buildingType || [], margin + 95, y);
         y = Math.max(yCol1, yCol2) + fieldGap;
-        // ... (rest of the text drawing)
         checkPageBreak(25);
         pdf.setFont("helvetica", "bold").setFontSize(10).text("Oppgi skadetype:", margin, y);
         drawCheckbox(margin + 40, y, "Brannskade", (report.damageType || []).includes("Brannskade"));
@@ -623,12 +645,12 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
             'Inventar eller utstyr tildekket med plast', 'Deler av bygningen tildekket med plast', 'Brukt flomvernmateriell', 
             'Utført sanering-/konservering', 'Utført måling av klorider', 'Strømlevering', 'Inventar eller utstyr flyttet til «sikkert>> sted'
         ];
-        createCheckboxColumn("Hva slags RVR-arbeid ble utført?", workPerformedOptions, report.workPerformed || [], margin, y, pageWidth - margin*2);
+        createCheckboxColumn("Hva slags RVR-arbeid ble utført?", workPerformedOptions, report.workPerformed || [], margin, y);
         y += workPerformedOptions.length * lineHeight + fieldGap;
         checkPageBreak(pageHeight); 
         drawTextBox("Hvilke verdier ble reddet? (Skal fylles ut)", report.valuesSaved || '', 40);
         const equipmentOptions = ['Plast', 'Avfukter', 'Lensepumpe', 'Røykvifte', 'Sprinklerstopper', 'Strømaggregat', 'Annet'];
-        let yEquip = createCheckboxColumn("Ble det benyttet noe utstyr?", equipmentOptions, report.equipmentUsed || [], margin, y, 80);
+        let yEquip = createCheckboxColumn("Benyttet utstyr?", equipmentOptions, report.equipmentUsed || [], margin, y);
         y = yEquip + fieldGap;
         drawTextBox("Beskriv skadeobjektet ved ankomst og arbeidets forløp. (Skal fylles ut)", report.damageDescription || '', 60);
         checkPageBreak(40);
@@ -658,7 +680,6 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
         drawTableRow(["På vakt", report.personnelOnDuty?.station, report.personnelOnDuty?.count, report.personnelOnDuty?.hours]);
         drawTableRow(["Innkalt", report.personnelCalledIn?.station, report.personnelCalledIn?.count, report.personnelCalledIn?.hours]);
         
-        // --- ADD IMAGES AND SAVE ---
         await addImagesToPdf();
 
         setDownloadStatus('Lagrer PDF...');
@@ -713,7 +734,6 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
                     ))}
                 </DetailSection>
 
-                {/* --- DISPLAY IMAGES IN ARCHIVE --- */}
                 {report.images && report.images.length > 0 && (
                     <DetailSection title="Bilder">
                         <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
@@ -735,33 +755,34 @@ function ArchiveListView({ reports, onSelectReport }) {
     return <div className="space-y-3 overflow-y-auto">{reports.map(report => (<button key={report.id} onClick={() => onSelectReport(report)} className="w-full text-left p-4 bg-gray-50 hover:bg-red-50 border border-gray-200 rounded-lg shadow-sm transition-all"><p className="font-bold text-gray-800">{report.locationAddress}</p><p className="text-sm text-gray-600">{report.createdAt ? new Date(report.createdAt.seconds * 1000).toLocaleString('nb-NO') : 'Dato mangler'}</p></button>))}</div>;
 }
 
-function InfoModal({ onClose }) {
-    const InfoListItem = ({ children }) => (<li className="flex items-start gap-3"><span className="text-red-500 mt-1">&#10148;</span><span>{children}</span></li>);
+function InfoModal({ onClose, error }) {
     return (
         <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
-                <div className="flex justify-between items-center p-4 border-b"><h2 className="text-xl font-bold text-gray-800">Føringer for RVR-arbeid</h2><button onClick={onClose} className="p-1 text-gray-500 hover:text-gray-800"><X size={24} /></button></div>
+                <div className="flex justify-between items-center p-4 border-b">
+                    <h2 className="text-xl font-bold text-gray-800">Feilsøkingsinformasjon</h2>
+                    <button onClick={onClose} className="p-1 text-gray-500 hover:text-gray-800"><X size={24} /></button>
+                </div>
                 <div className="p-6 space-y-4 overflow-y-auto text-gray-700">
-                    <h3 className="font-bold">Følgende føringer gjelder når «lokalt brannvesen» utfører hele RVR-jobben selv:</h3>
-                    <ul className="space-y-3">
-                        <InfoListItem>Når lokalt brannvesen er ute på brann eller mindre vannlekkasje og gjør stedet «tørt og røykfritt», kan det skrives RVR-rapport på dette.</InfoListItem>
-                        <InfoListItem>F.eks. en kjøkkenbrann. Dere slukker brannen og setter på røykvifte for å gjøre det røykfritt. Da kan det skrives RVR-rapport på 1 eller 2 mannskap i f.eks. en halvtime eller time. <strong>Husk!</strong> Godtgjøring gjelder de som utfører RVR og ikke brannbekjempelse.</InfoListItem>
-                        <InfoListItem>Lokalt brannvesen kan iverksette og håndtere hele RVR-oppdraget alene, med det utstyret og de mannskapene dere har tilgjengelig.</InfoListItem>
-                        <InfoListItem>RVR-bil kan rykke ut med mer kompetanse og mer utstyr om oppdraget tilsier det. Dette avklares med vertskommune.</InfoListItem>
-                        <InfoListItem>Lokalt brannvesen må i slike tilfeller også foreta rapportskriving og billedtaking.</InfoListItem>
-                        <InfoListItem>All info må sendes til vaktleder hos vertskommunene for RVR i tilhørende region, som kvalitetssjekker og videresender.</InfoListItem>
-                        <InfoListItem>Vær ærlig på personer og timer. Det blir normalt ikke godkjent 4-6 mannskaper på et mindre RVR-oppdrag (f.eks. mindre vannsuging/røykvifte vil være 1-2 mann).</InfoListItem>
-                        <InfoListItem>Ved større hendelser (større vannlekkasjer eller omfattende branner) vil det kunne være behov for flere mannskaper, men ved slike oppdrag bør uansett RVR-bil fra vertskommune rykke ut.</InfoListItem>
-                        <InfoListItem>Man må skille mellom det kommunale ansvaret (brannslokking, etterslokk, vakthold) og RVR-innsatsen (røykventilering, tildekking, utbæring av innbo etc.).</InfoListItem>
-                         <InfoListItem>Er det i tvil, kontakt vaktleder hos vertskommunen til RVR i den regionen dere tilhører.</InfoListItem>
-                    </ul>
-                    <h3 className="font-bold pt-4 border-t">En forutsetning er at oppdrag skal avklares med vaktleder hos vertskommunen før RVR-arbeidet starter:</h3>
-                     <ul className="space-y-3">
-                        <InfoListItem>Her avtales det om man gjør det selv eller om vertskommunen for RVR bør rykke ut med RVR-bil og ekstra utstyr.</InfoListItem>
-                        <InfoListItem>Man skal ikke utføre arbeid og deretter sende over rapport uten at dette er avklart.</InfoListItem>
-                    </ul>
-                    <p className="pt-4 border-t">Rapport fra lokalt brannvesen til vertskommune bør normalt sendes i løpet av 12-24 timer etter hendelsen.</p>
-                    <p className="font-bold">Husk! RVR-oppdrag over 4 timer skal godkjennes av forsikringsselskap.</p>
+                    <h3 className="font-bold">Siste registrerte feil</h3>
+                    {error ? (
+                        <div className="p-3 bg-red-50 text-red-800 border border-red-200 rounded-md font-mono text-sm">
+                            <p><strong>Kode:</strong> {error.code || 'Ingen kode'}</p>
+                            <p><strong>Melding:</strong> {error.message || 'Ingen melding'}</p>
+                        </div>
+                    ) : (
+                        <p>Ingen feil har blitt registrert i denne økten.</p>
+                    )}
+                     <h3 className="font-bold pt-4 border-t">Systeminformasjon</h3>
+                     <div className="p-3 bg-gray-50 border rounded-md font-mono text-sm">
+                        <p><strong>Prosjekt-ID:</strong> {firebaseConfig.projectId}</p>
+                        <p><strong>Storage Bucket:</strong> {firebaseConfig.storageBucket}</p>
+                        <p><strong>Auth Domain:</strong> {firebaseConfig.authDomain}</p>
+                        <p><strong>Nettleser:</strong> {navigator.userAgent}</p>
+                     </div>
+                    <p className="pt-4 border-t">
+                        Hvis problemet vedvarer, ta et skjermbilde av denne informasjonen og feilmeldingen i nettleserens konsoll (trykk F12 for å åpne) og send det til systemansvarlig.
+                    </p>
                 </div>
                  <div className="p-4 bg-gray-50 border-t"><button onClick={onClose} className="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-md hover:bg-red-700">Lukk</button></div>
             </div>
