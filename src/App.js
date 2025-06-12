@@ -10,7 +10,7 @@ import {
     setPersistence,
     browserLocalPersistence
 } from 'firebase/auth';
-import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2, Camera, Upload, Bug } from 'lucide-react';
+import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2, Camera, Upload, Bug, FilePenLine } from 'lucide-react';
 import { jsPDF } from "jspdf";
 
 // --- Firebase Configuration ---
@@ -158,10 +158,13 @@ function MainApp({ user }) {
         personnelOnDuty: { station: '', count: '', hours: '' },
         personnelCalledIn: { station: '', count: '', hours: '' },
         equipmentUsed: [],
-        images: [],
+        images: [], // Holds { type: 'new'/'existing', data: File/URL }
     };
     
     const [form, setForm] = useState(initialFormState);
+    const [editingReportId, setEditingReportId] = useState(null);
+    const [originalImages, setOriginalImages] = useState([]);
+    
     const [recipientEmail, setRecipientEmail] = useState('');
     const [isLoading, setIsLoading] = useState(true);
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -184,7 +187,9 @@ function MainApp({ user }) {
 
     useEffect(() => {
         return () => {
-            form.images.forEach(image => URL.revokeObjectURL(image.preview));
+            form.images.forEach(image => {
+                if(image.type === 'new') URL.revokeObjectURL(image.preview);
+            });
         };
     }, [form.images]);
 
@@ -197,10 +202,6 @@ function MainApp({ user }) {
                 if (docSnap.exists()) {
                     setRecipientEmail(docSnap.data().recipientEmail);
                     setTempAdminEmail(docSnap.data().recipientEmail);
-                } else {
-                    await setDoc(docRef, { recipientEmail: "postmottak@larvik.brannvesen.no" });
-                    setRecipientEmail("postmottak@larvik.brannvesen.no");
-                    setTempAdminEmail("postmottak@larvik.brannvesen.no");
                 }
             } catch (error) {
                 console.error("Firestore read error:", error);
@@ -274,6 +275,7 @@ function MainApp({ user }) {
     const handleImageSelect = (e) => {
         const files = Array.from(e.target.files);
         const imageFiles = files.map(file => ({
+            type: 'new',
             file: file,
             preview: URL.createObjectURL(file)
         }));
@@ -284,7 +286,10 @@ function MainApp({ user }) {
     const handleRemoveImage = (index) => {
         setForm(prev => {
             const newImages = [...prev.images];
-            URL.revokeObjectURL(newImages[index].preview);
+            const imageToRemove = newImages[index];
+            if(imageToRemove.type === 'new') {
+                URL.revokeObjectURL(imageToRemove.preview);
+            }
             newImages.splice(index, 1);
             return { ...prev, images: newImages };
         });
@@ -298,37 +303,56 @@ function MainApp({ user }) {
         
         setIsSubmitting(true);
         setLastError(null);
-        setSubmissionStatus("Lagrer rapportdata...");
-        let docRef;
+        setSubmissionStatus(editingReportId ? "Oppdaterer rapport..." : "Lagrer rapport...");
 
         try {
-            const { images, ...dataToSave } = form; 
-            
-            docRef = await addDoc(collection(db, "reports"), {
-                ...dataToSave,
-                images: [],
-                submittedBy: user.email,
-                createdAt: serverTimestamp()
-            });
-            
-            if (form.images.length > 0) {
-                setSubmissionStatus(`Laster opp ${form.images.length} bilde(r)...`);
-                
-                const uploadPromises = form.images.map((image) => {
-                    const imageRef = ref(storage, `reports/${docRef.id}/${image.file.name}`);
+            // Separate new images to upload from existing image URLs
+            const newImagesToUpload = form.images.filter(img => img.type === 'new');
+            const existingImageUrls = form.images.filter(img => img.type === 'existing').map(img => img.url);
+
+            // Upload any new images
+            let newImageUrls = [];
+            if (newImagesToUpload.length > 0) {
+                setSubmissionStatus(`Laster opp ${newImagesToUpload.length} nye bilde(r)...`);
+                const reportIdForStorage = editingReportId || doc(collection(db, "temp")).id; // Use existing ID or generate a temporary one for path
+                const uploadPromises = newImagesToUpload.map(image => {
+                    const imageRef = ref(storage, `reports/${reportIdForStorage}/${image.file.name}`);
                     return new Promise((resolve, reject) => {
-                        const uploadTask = uploadBytesResumable(imageRef, image.file);
-                        uploadTask.on('state_changed', null, reject, () => {
-                            getDownloadURL(uploadTask.snapshot.ref).then(resolve).catch(reject);
+                        uploadBytesResumable(imageRef, image.file).on('state_changed', null, reject, () => {
+                            getDownloadURL(ref(storage, imageRef.fullPath)).then(resolve).catch(reject);
                         });
                     });
                 });
-                
-                const imageUrls = await Promise.all(uploadPromises);
-                await updateDoc(docRef, { images: imageUrls });
+                newImageUrls = await Promise.all(uploadPromises);
             }
-            
-            showModal("Suksess!", "Rapporten er lagret i arkivet.", () => resetForm(false));
+
+            // Delete images that were removed during edit
+            if(editingReportId) {
+                const removedImages = originalImages.filter(url => !existingImageUrls.includes(url));
+                if(removedImages.length > 0) {
+                    const deletePromises = removedImages.map(url => deleteObject(ref(storage, url)));
+                    await Promise.allSettled(deletePromises);
+                }
+            }
+
+            const finalImageUrls = [...existingImageUrls, ...newImageUrls];
+            const { images, ...dataToSave } = form;
+
+            if (editingReportId) {
+                // Update existing document
+                const docRef = doc(db, 'reports', editingReportId);
+                await updateDoc(docRef, { ...dataToSave, images: finalImageUrls });
+                showModal("Suksess!", "Rapporten ble oppdatert.", () => resetForm(false));
+            } else {
+                // Create new document
+                await addDoc(collection(db, "reports"), {
+                    ...dataToSave,
+                    images: finalImageUrls,
+                    submittedBy: user.email,
+                    createdAt: serverTimestamp()
+                });
+                showModal("Suksess!", "Rapporten er lagret i arkivet.", () => resetForm(false));
+            }
 
         } catch (error) {
             console.error("Feil under lagringsprosessen:", error);
@@ -339,40 +363,45 @@ function MainApp({ user }) {
             setSubmissionStatus('');
         }
     };
+
+    const handleLoadReportForEdit = (report) => {
+        setEditingReportId(report.id);
+        const imagesToLoad = (report.images || []).map(url => ({
+            type: 'existing',
+            url: url,
+            preview: url
+        }));
+        setOriginalImages(report.images || []); // Store the original list for comparison on save
+        setForm({ ...initialFormState, ...report, images: imagesToLoad });
+        setIsArchiveOpen(false);
+    };
     
     const handleDeleteReport = (reportId, images) => {
         const performDelete = async () => {
             try {
                 if (images && images.length > 0) {
-                    const deletePromises = images.map(imageUrl => {
-                        const imageRef = ref(storage, imageUrl);
-                        return deleteObject(imageRef);
-                    });
+                    const deletePromises = images.map(imageUrl => deleteObject(ref(storage, imageUrl)));
                     await Promise.allSettled(deletePromises);
                 }
                 await deleteDoc(doc(db, "reports", reportId));
                 setArchivedReports(prev => prev.filter(r => r.id !== reportId));
                 showModal("Suksess", "Rapporten ble slettet.");
-
             } catch (err) {
-                console.error("Feil ved sletting:", err);
                 setLastError(err);
                 showModal("Slettefeil", `Kunne ikke slette rapporten. Feil: ${err.message}`);
             }
         };
-
-        showModal(
-            "Slette rapport?", 
-            "Er du sikker på at du vil slette? Rapporten og alle tilhørende bilder blir slettet for godt.",
-            performDelete
-        );
+        showModal("Slette rapport?", "Er du sikker på at du vil slette? Rapporten og alle tilhørende bilder blir slettet for godt.", performDelete);
     };
-
 
     const resetForm = (confirm = true) => {
         const doReset = () => {
-            form.images.forEach(image => URL.revokeObjectURL(image.preview));
+            form.images.forEach(image => {
+                if(image.type === 'new') URL.revokeObjectURL(image.preview);
+            });
             setForm(initialFormState);
+            setEditingReportId(null);
+            setOriginalImages([]);
         };
         if (confirm) showModal("Nullstille skjema?", "Alle data, inkludert valgte bilder, vil bli slettet.", doReset);
         else doReset();
@@ -385,7 +414,7 @@ function MainApp({ user }) {
             {modal.isOpen && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm text-center">{modal.onConfirm ? <AlertTriangle className="h-12 w-12 text-yellow-500 mx-auto mb-4" /> : <ShieldCheck className="h-12 w-12 text-green-500 mx-auto mb-4" />}<h2 className="text-xl font-bold text-gray-800 mb-2">{modal.title}</h2><p className="text-gray-600 mb-6">{modal.message}</p><div className={`flex ${modal.onConfirm ? 'justify-between' : 'justify-center'}`}>{modal.onConfirm && <button onClick={closeModal} className="bg-gray-200 text-gray-800 font-bold py-2 px-6 rounded-md">Avbryt</button>}<button onClick={handleConfirm} className="bg-red-600 text-white font-bold py-2 px-6 rounded-md">{modal.onConfirm ? 'Bekreft' : 'OK'}</button></div></div></div>)}
             {isPasswordPromptOpen && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><form onSubmit={handlePasswordSubmit} className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm"><div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Admin-pålogging</h2><button type="button" onClick={() => setIsPasswordPromptOpen(false)}><X size={24} /></button></div><p className="text-sm text-gray-600 mb-4">Skriv inn passord.</p><div><label htmlFor="password">Passord</label><input type="password" id="password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} className={`w-full p-2 border ${passwordError ? 'border-red-500' : 'border-gray-300'} rounded-md`} autoFocus/>{passwordError && <p className="text-red-500 text-xs mt-1">{passwordError}</p>}</div><button type="submit" className="w-full mt-4 bg-red-600 text-white font-bold py-2 px-4 rounded-md flex items-center justify-center"><KeyRound size={18} className="mr-2" /> Logg inn</button></form></div>)}
             {isAdminMode && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-md"><div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Admin-innstillinger</h2><button onClick={() => setIsAdminMode(false)}><X size={24} /></button></div><div className="space-y-4"><div><label htmlFor="adminEmail">Mottakerens e-post</label><input type="email" id="adminEmail" value={tempAdminEmail} onChange={(e) => setTempAdminEmail(e.target.value)} className="w-full p-2 border border-gray-300 rounded-md"/></div><button onClick={saveAdminEmail} className="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-md flex items-center justify-center"><Save size={18} className="mr-2" /> Lagre E-post</button><button onClick={() => setIsDebugOpen(true)} className="w-full bg-gray-600 text-white font-bold py-2 px-4 rounded-md flex items-center justify-center"><Bug size={18} className="mr-2" /> Vis Feilsøkingsinfo</button></div></div></div>)}
-            {isArchiveOpen && (<div className="fixed inset-0 bg-white z-40 p-4 sm:p-6 lg:p-8"><div className="max-w-4xl mx-auto h-full flex flex-col"><div className="flex justify-between items-center mb-4 pb-4 border-b"><h2 className="text-2xl font-bold text-red-800">Rapportarkiv</h2><button onClick={() => { setIsArchiveOpen(false); setSelectedReport(null); }} className="p-2 text-gray-600 hover:text-red-700"><X size={28} /></button></div>{isArchiveLoading ? (<div className="flex-grow flex items-center justify-center"><Loader2 className="h-12 w-12 animate-spin text-red-600" /></div>) : selectedReport ? (<ReportDetailView report={selectedReport} onBack={() => setSelectedReport(null)} recipientEmail={recipientEmail} />) : (<ArchiveListView reports={archivedReports} onSelectReport={setSelectedReport} onDeleteReport={handleDeleteReport} />)}</div></div>)}
+            {isArchiveOpen && (<div className="fixed inset-0 bg-white z-40 p-4 sm:p-6 lg:p-8"><div className="max-w-4xl mx-auto h-full flex flex-col"><div className="flex justify-between items-center mb-4 pb-4 border-b"><h2 className="text-2xl font-bold text-red-800">Rapportarkiv</h2><button onClick={() => { setIsArchiveOpen(false); setSelectedReport(null); }} className="p-2 text-gray-600 hover:text-red-700"><X size={28} /></button></div>{isArchiveLoading ? (<div className="flex-grow flex items-center justify-center"><Loader2 className="h-12 w-12 animate-spin text-red-600" /></div>) : selectedReport ? (<ReportDetailView report={selectedReport} onBack={() => setSelectedReport(null)} recipientEmail={recipientEmail} />) : (<ArchiveListView reports={archivedReports} onSelectReport={setSelectedReport} onDeleteReport={handleDeleteReport} onEditReport={handleLoadReportForEdit} />)}</div></div>)}
             {isInfoOpen && <GuidelinesModal onClose={() => setIsInfoOpen(false)} />}
             {isDebugOpen && <DebugModal onClose={() => setIsDebugOpen(false)} error={lastError} />}
 
@@ -402,9 +431,10 @@ function MainApp({ user }) {
             </header>
             
             <main className="container mx-auto p-4 pb-24">
+                 <h2 className="text-2xl font-bold text-red-800 mb-4">{editingReportId ? 'Redigerer Rapport' : 'Ny Rapport'}</h2>
                 <form onSubmit={(e) => e.preventDefault()}>
                      <div className="bg-white p-6 rounded-lg shadow mb-6">
-                        <h2 className="text-lg font-bold border-b pb-2 mb-4 text-red-800">Generell Informasjon</h2>
+                        <h3 className="text-lg font-bold border-b pb-2 mb-4 text-red-800">Generell Informasjon</h3>
                         <div className="grid md:grid-cols-2 gap-x-6 gap-y-4">
                             <FormField label="Dato" name="reportDate" value={form.reportDate} onChange={handleInputChange} type="date" required />
                             <FormField label="Tidspunkt for start" name="startTime" value={form.startTime} onChange={handleInputChange} type="time" required />
@@ -414,13 +444,13 @@ function MainApp({ user }) {
                         </div>
                     </div>
                      <div className="bg-white p-6 rounded-lg shadow mb-6">
-                        <div className="flex justify-between items-center border-b pb-2 mb-4"><h2 className="text-lg font-bold text-red-800">Forsikringstaker</h2><button type="button" onClick={addStakeholder} className="bg-red-500 text-white p-2 rounded-full hover:bg-red-600"><Plus size={20} /></button></div>
+                        <div className="flex justify-between items-center border-b pb-2 mb-4"><h3 className="text-lg font-bold text-red-800">Forsikringstaker</h3><button type="button" onClick={addStakeholder} className="bg-red-500 text-white p-2 rounded-full hover:bg-red-600"><Plus size={20} /></button></div>
                         {form.stakeholders.map((s, index) => (
-                             <div key={index} className="relative border p-4 rounded-md mb-4 bg-gray-50"><h3 className="font-semibold mb-2">Person {index + 1}</h3>{form.stakeholders.length > 1 && <button type="button" onClick={() => removeStakeholder(index)} className="absolute top-2 right-2 p-1 text-red-500 hover:text-red-700"><Trash2 size={18} /></button>}<div className="grid md:grid-cols-2 gap-x-6 gap-y-4"><FormField label="Navn" name="name" value={s.name} onChange={(e) => handleStakeholderChange(index, e)} /><div><label className="block text-sm font-medium text-gray-700 mb-1">Type</label><select name="type" value={s.type} onChange={(e) => handleStakeholderChange(index, e)} className="w-full px-3 py-2 border border-gray-300 rounded-md"><option>Eier</option><option>Leier</option></select></div><FormField label="Telefon" name="phone" value={s.phone} onChange={(e) => handleStakeholderChange(index, e)} /><FormField label="Adresse" name="address" value={s.address} onChange={(e) => handleStakeholderChange(index, e)} /><div className="md:col-span-2"><FormField label="Forsikringsselskap" name="insurance" value={s.insurance} onChange={(e) => handleStakeholderChange(index, e)} /></div></div></div>
+                             <div key={index} className="relative border p-4 rounded-md mb-4 bg-gray-50"><h4 className="font-semibold mb-2">Person {index + 1}</h4>{form.stakeholders.length > 1 && <button type="button" onClick={() => removeStakeholder(index)} className="absolute top-2 right-2 p-1 text-red-500 hover:text-red-700"><Trash2 size={18} /></button>}<div className="grid md:grid-cols-2 gap-x-6 gap-y-4"><FormField label="Navn" name="name" value={s.name} onChange={(e) => handleStakeholderChange(index, e)} /><div><label className="block text-sm font-medium text-gray-700 mb-1">Type</label><select name="type" value={s.type} onChange={(e) => handleStakeholderChange(index, e)} className="w-full px-3 py-2 border border-gray-300 rounded-md"><option>Eier</option><option>Leier</option></select></div><FormField label="Telefon" name="phone" value={s.phone} onChange={(e) => handleStakeholderChange(index, e)} /><FormField label="Adresse" name="address" value={s.address} onChange={(e) => handleStakeholderChange(index, e)} /><div className="md:col-span-2"><FormField label="Forsikringsselskap" name="insurance" value={s.insurance} onChange={(e) => handleStakeholderChange(index, e)} /></div></div></div>
                          ))}
                     </div>
                     <div className="bg-white p-6 rounded-lg shadow mb-6 space-y-6">
-                         <h2 className="text-lg font-bold border-b pb-2 text-red-800">Oppdrag og Arbeid</h2>
+                         <h3 className="text-lg font-bold border-b pb-2 text-red-800">Oppdrag og Arbeid</h3>
                          <CheckboxGroup legend="Hvilken sektor gjelder det?" name="sector" options={['Privat (hus og hytte)', 'Borettslag, sameie, blokk', 'Næringsbygg, kjøpesenter, restaurant, driftsbygning', 'Offentlig - kommune, fylke, stat, forsvar']} value={form.sector} onChange={handleCheckboxChange} />
                          <CheckboxGroup legend="Hvilken type bygg er det?" name="buildingType" options={['Enebolig', 'Leilighet, borettslag, sameie, blokk', 'Hytte', 'Landbruksbygg', 'Industri', 'Næringsvirksomhet', 'Hotell, overnattingssted', 'Skole, barnehage, idrettshall', 'Annet']} value={form.buildingType} onChange={handleCheckboxChange} />
                          <CheckboxGroup legend="Oppgi skadetype" name="damageType" options={['Brannskade', 'Vannskade', 'Annet']} value={form.damageType} onChange={handleCheckboxChange} />
@@ -433,7 +463,7 @@ function MainApp({ user }) {
                          </div>
                     </div>
                     <div className="bg-white p-6 rounded-lg shadow mb-6 space-y-6">
-                        <h2 className="text-lg font-bold border-b pb-2 text-red-800">Arbeidsdetaljer</h2>
+                        <h3 className="text-lg font-bold border-b pb-2 text-red-800">Arbeidsdetaljer</h3>
                         <CheckboxGroup legend="Hva slags RVR-arbeid ble utført?" name="workPerformed" options={['Pulversuging', 'Røykventilering', 'Lensing av vann', 'Avfukting/tørking', 'Innbo eller utstyr kjørt bort', 'Inventar eller utstyr tildekket med plast', 'Deler av bygningen tildekket med plast', 'Brukt flomvernmateriell', 'Utført sanering-/konservering', 'Utført måling av klorider', 'Strømlevering', 'Inventar eller utstyr flyttet til «sikkert>> sted']} value={form.workPerformed} onChange={handleCheckboxChange} />
                         <div><label htmlFor="valuesSaved" className="block text-sm font-medium text-gray-700 mb-1">Hvilke verdier ble reddet?</label><textarea id="valuesSaved" name="valuesSaved" value={form.valuesSaved} onChange={handleInputChange} rows="3" className="w-full p-2 border border-gray-300 rounded-md"></textarea></div>
                         <CheckboxGroup legend="Benyttet utstyr?" name="equipmentUsed" options={['Plast', 'Avfukter', 'Lensepumpe', 'Røykvifte', 'Sprinklerstopper', 'Strømaggregat', 'Annet']} value={form.equipmentUsed} onChange={handleCheckboxChange} />
@@ -441,10 +471,10 @@ function MainApp({ user }) {
                     </div>
 
                     <div className="bg-white p-6 rounded-lg shadow mb-6">
-                        <h2 className="text-lg font-bold border-b pb-2 mb-4 text-red-800">Bilder</h2>
+                        <h3 className="text-lg font-bold border-b pb-2 mb-4 text-red-800">Bilder</h3>
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
                             {form.images.map((image, index) => (
-                                <div key={index} className="relative group aspect-square">
+                                <div key={image.preview} className="relative group aspect-square">
                                     <img src={image.preview} alt={`Forhåndsvisning ${index + 1}`} className="w-full h-full object-cover rounded-md" />
                                     <button type="button" onClick={() => handleRemoveImage(index)} className="absolute top-1 right-1 bg-black bg-opacity-50 text-white rounded-full p-1 group-hover:opacity-100 opacity-0 transition-opacity">
                                         <Trash2 size={16} />
@@ -466,9 +496,9 @@ function MainApp({ user }) {
 
 
                     <div className="bg-white p-6 rounded-lg shadow mb-6">
-                        <h2 className="text-lg font-bold border-b pb-2 mb-4 text-red-800">RVR-Personell</h2>
-                        <div className="mb-4 p-4 border rounded-md bg-gray-50"><h3 className="font-semibold mb-2">På vakt</h3><div className="grid md:grid-cols-3 gap-4"><FormField label="Stasjon" name="station" value={form.personnelOnDuty.station} onChange={(e) => handlePersonnelChange('personnelOnDuty', e)} /><FormField label="Ant. mannskap" name="count" type="number" value={form.personnelOnDuty.count} onChange={(e) => handlePersonnelChange('personnelOnDuty', e)} /><FormField label="Ant. timer" name="hours" type="number" value={form.personnelOnDuty.hours} onChange={(e) => handlePersonnelChange('personnelOnDuty', e)} /></div></div>
-                        <div className="p-4 border rounded-md bg-gray-50"><h3 className="font-semibold mb-2">Innkalt</h3><div className="grid md:grid-cols-3 gap-4"><FormField label="Stasjon" name="station" value={form.personnelCalledIn.station} onChange={(e) => handlePersonnelChange('personnelCalledIn', e)} /><FormField label="Ant. mannskap" name="count" type="number" value={form.personnelCalledIn.count} onChange={(e) => handlePersonnelChange('personnelCalledIn', e)} /><FormField label="Ant. timer" name="hours" type="number" value={form.personnelCalledIn.hours} onChange={(e) => handlePersonnelChange('personnelCalledIn', e)} /></div></div>
+                        <h3 className="text-lg font-bold border-b pb-2 mb-4 text-red-800">RVR-Personell</h3>
+                        <div className="mb-4 p-4 border rounded-md bg-gray-50"><h4 className="font-semibold mb-2">På vakt</h4><div className="grid md:grid-cols-3 gap-4"><FormField label="Stasjon" name="station" value={form.personnelOnDuty.station} onChange={(e) => handlePersonnelChange('personnelOnDuty', e)} /><FormField label="Ant. mannskap" name="count" type="number" value={form.personnelOnDuty.count} onChange={(e) => handlePersonnelChange('personnelOnDuty', e)} /><FormField label="Ant. timer" name="hours" type="number" value={form.personnelOnDuty.hours} onChange={(e) => handlePersonnelChange('personnelOnDuty', e)} /></div></div>
+                        <div className="p-4 border rounded-md bg-gray-50"><h4 className="font-semibold mb-2">Innkalt</h4><div className="grid md:grid-cols-3 gap-4"><FormField label="Stasjon" name="station" value={form.personnelCalledIn.station} onChange={(e) => handlePersonnelChange('personnelCalledIn', e)} /><FormField label="Ant. mannskap" name="count" type="number" value={form.personnelCalledIn.count} onChange={(e) => handlePersonnelChange('personnelCalledIn', e)} /><FormField label="Ant. timer" name="hours" type="number" value={form.personnelCalledIn.hours} onChange={(e) => handlePersonnelChange('personnelCalledIn', e)} /></div></div>
                     </div>
                  </form>
             </main>
@@ -476,7 +506,7 @@ function MainApp({ user }) {
             <footer className="fixed bottom-0 left-0 right-0 bg-white bg-opacity-90 p-4 border-t z-10">
                 <div className="container mx-auto flex flex-col md:flex-row gap-4">
                      <button type="button" onClick={handleSave} disabled={isSubmitting} className="w-full md:w-2/3 bg-green-600 text-white font-bold py-3 px-4 rounded-md flex items-center justify-center disabled:bg-gray-400">
-                        {isSubmitting ? <><Loader2 className="animate-spin mr-2" /> {submissionStatus || 'Lagrer...'}</> : <><Save size={22} className="mr-2" /> Lagre Rapport</>}
+                        {isSubmitting ? <><Loader2 className="animate-spin mr-2" /> {submissionStatus || 'Lagrer...'}</> : <><Save size={22} className="mr-2" /> {editingReportId ? 'Oppdater Rapport' : 'Lagre Rapport'}</>}
                     </button>
                      <button type="button" onClick={() => resetForm(true)} disabled={isSubmitting} className="w-full md:w-1/3 bg-gray-500 text-white font-bold py-3 px-4 rounded-md flex items-center justify-center disabled:bg-gray-400">
                         <X size={22} className="mr-2" /> Nullstill
@@ -599,7 +629,11 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
         drawSection("Forsikringstaker(e)", (x, startY) => {
             let currentY = startY;
             (report.stakeholders || []).forEach((s, i) => {
-                if (i > 0) currentY += 5;
+                if (i > 0) {
+                    currentY += 4;
+                    pdf.setDrawColor(220, 220, 220).line(x, currentY, x + pageWidth - margin*2 - 6, currentY);
+                    currentY += 6;
+                }
                 const valueX = x + 35;
                 pdf.setFontSize(10);
 
@@ -739,7 +773,7 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
     );
 }
 
-function ArchiveListView({ reports, onSelectReport, onDeleteReport }) {
+function ArchiveListView({ reports, onSelectReport, onDeleteReport, onEditReport }) {
     if (reports.length === 0) return <div className="text-center text-gray-500 py-10">Ingen rapporter funnet i arkivet.</div>;
     return (
         <div className="space-y-3 overflow-y-auto">
@@ -749,16 +783,22 @@ function ArchiveListView({ reports, onSelectReport, onDeleteReport }) {
                         <p className="font-bold text-gray-800">{report.locationAddress}</p>
                         <p className="text-sm text-gray-600">{report.createdAt ? new Date(report.createdAt.seconds * 1000).toLocaleString('nb-NO') : 'Dato mangler'}</p>
                     </button>
-                    <button 
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            onDeleteReport(report.id, report.images);
-                        }}
-                        className="p-2 text-gray-400 hover:text-red-600"
-                        title="Slett rapport"
-                    >
-                        <Trash2 size={20} />
-                    </button>
+                    <div className="flex items-center">
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); onEditReport(report); }}
+                            className="p-2 text-gray-400 hover:text-blue-600"
+                            title="Rediger rapport"
+                        >
+                            <FilePenLine size={20} />
+                        </button>
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); onDeleteReport(report.id, report.images); }}
+                            className="p-2 text-gray-400 hover:text-red-600"
+                            title="Slett rapport"
+                        >
+                            <Trash2 size={20} />
+                        </button>
+                    </div>
                 </div>
             ))}
         </div>
