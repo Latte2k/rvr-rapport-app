@@ -10,7 +10,7 @@ import {
     setPersistence,
     browserLocalPersistence
 } from 'firebase/auth';
-import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2, Camera, Upload, Bug, FilePenLine } from 'lucide-react';
+import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2, Camera, Upload, Bug, FileEdit } from 'lucide-react';
 import { jsPDF } from "jspdf";
 
 // --- Firebase Configuration ---
@@ -314,7 +314,7 @@ function MainApp({ user }) {
             let newImageUrls = [];
             if (newImagesToUpload.length > 0) {
                 setSubmissionStatus(`Laster opp ${newImagesToUpload.length} nye bilde(r)...`);
-                const reportIdForStorage = editingReportId || doc(collection(db, "temp")).id; // Use existing ID or generate a temporary one for path
+                const reportIdForStorage = editingReportId || doc(collection(db, "temp")).id;
                 const uploadPromises = newImagesToUpload.map(image => {
                     const imageRef = ref(storage, `reports/${reportIdForStorage}/${image.file.name}`);
                     return new Promise((resolve, reject) => {
@@ -371,7 +371,7 @@ function MainApp({ user }) {
             url: url,
             preview: url
         }));
-        setOriginalImages(report.images || []); // Store the original list for comparison on save
+        setOriginalImages(report.images || []);
         setForm({ ...initialFormState, ...report, images: imagesToLoad });
         setIsArchiveOpen(false);
     };
@@ -789,7 +789,7 @@ function ArchiveListView({ reports, onSelectReport, onDeleteReport, onEditReport
                             className="p-2 text-gray-400 hover:text-blue-600"
                             title="Rediger rapport"
                         >
-                            <FilePenLine size={20} />
+                            <FileEdit size={20} />
                         </button>
                         <button 
                             onClick={(e) => { e.stopPropagation(); onDeleteReport(report.id, report.images); }}
