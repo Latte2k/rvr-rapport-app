@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, setDoc, addDoc, collection, serverTimestamp, query, orderBy, getDocs, updateDoc } from 'firebase/firestore';
-import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
+import { getFirestore, doc, getDoc, setDoc, addDoc, collection, serverTimestamp, query, orderBy, getDocs, updateDoc, deleteDoc } from 'firebase/firestore';
+import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject } from "firebase/storage";
 import { 
     getAuth, 
     onAuthStateChanged, 
@@ -10,7 +10,7 @@ import {
     setPersistence,
     browserLocalPersistence
 } from 'firebase/auth';
-import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2, Upload } from 'lucide-react';
+import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2, Camera, Upload } from 'lucide-react';
 import { jsPDF } from "jspdf";
 
 // --- Firebase Configuration ---
@@ -18,7 +18,7 @@ const firebaseConfig = {
   apiKey: "AIzaSyDkUF1zg9-UdgxUYk89EtYGvrq2EFN_sZQ",
   authDomain: "rvr-rapport.firebaseapp.com",
   projectId: "rvr-rapport",
-  storageBucket: "rvr-rapport.firebasestorage.app", // Korrigert til den bekreftede bøtten
+  storageBucket: "rvr-rapport.firebasestorage.app",
   messagingSenderId: "91875572439",
   appId: "1:91875572439:web:c3bf441eb04ebe653b0e92",
   measurementId: "G-132TJ4NRMG"
@@ -158,7 +158,7 @@ function MainApp({ user }) {
         personnelOnDuty: { station: '', count: '', hours: '' },
         personnelCalledIn: { station: '', count: '', hours: '' },
         equipmentUsed: [],
-        images: [], // To hold selected image files
+        images: [],
     };
     
     const [form, setForm] = useState(initialFormState);
@@ -182,7 +182,6 @@ function MainApp({ user }) {
     const [lastError, setLastError] = useState(null);
 
     useEffect(() => {
-        // Clean up object URLs on component unmount
         return () => {
             form.images.forEach(image => URL.revokeObjectURL(image.preview));
         };
@@ -205,7 +204,7 @@ function MainApp({ user }) {
             } catch (error) {
                 console.error("Firestore read error:", error);
                 setLastError(error);
-                showModal("Feil", "Kunne ikke laste innstillinger. Sjekk sikkerhetsregler i Firebase.");
+                showModal("Feil", "Kunne ikke laste innstillinger.");
             } finally {
                 setIsLoading(false);
             }
@@ -278,6 +277,7 @@ function MainApp({ user }) {
             preview: URL.createObjectURL(file)
         }));
         setForm(prev => ({ ...prev, images: [...prev.images, ...imageFiles]}));
+        e.target.value = null;
     };
 
     const handleRemoveImage = (index) => {
@@ -309,40 +309,21 @@ function MainApp({ user }) {
                 submittedBy: user.email,
                 createdAt: serverTimestamp()
             });
-            console.log("Rapportdokument opprettet med ID:", docRef.id);
             
             if (form.images.length > 0) {
                 setSubmissionStatus(`Laster opp ${form.images.length} bilde(r)...`);
                 
-                const uploadPromises = form.images.map((image, index) => {
+                const uploadPromises = form.images.map((image) => {
                     const imageRef = ref(storage, `reports/${docRef.id}/${image.file.name}`);
-                    console.log(`Starter opplasting for bilde ${index + 1}: ${image.file.name}`);
-                    
                     return new Promise((resolve, reject) => {
                         const uploadTask = uploadBytesResumable(imageRef, image.file);
-                        uploadTask.on('state_changed', 
-                            (snapshot) => {
-                                const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-                                console.log(`Opplasting for ${image.file.name} er ${progress}% ferdig`);
-                            }, 
-                            (error) => {
-                                console.error(`Opplastingsfeil for ${image.file.name}:`, error);
-                                reject(error); // Reject the promise on error
-                            }, 
-                            () => {
-                                getDownloadURL(uploadTask.snapshot.ref).then(downloadURL => {
-                                    console.log(`Fil tilgjengelig på`, downloadURL);
-                                    resolve(downloadURL); // Resolve the promise with the URL
-                                });
-                            }
-                        );
+                        uploadTask.on('state_changed', null, reject, () => {
+                            getDownloadURL(uploadTask.snapshot.ref).then(resolve).catch(reject);
+                        });
                     });
                 });
                 
                 const imageUrls = await Promise.all(uploadPromises);
-                console.log("Alle opplastinger ferdige. URLer:", imageUrls);
-
-                setSubmissionStatus("Oppdaterer rapport med bilder...");
                 await updateDoc(docRef, { images: imageUrls });
             }
             
@@ -351,11 +332,47 @@ function MainApp({ user }) {
         } catch (error) {
             console.error("Feil under lagringsprosessen:", error);
             setLastError(error);
-            showModal("Feil ved lagring", `Noe gikk galt under lagringen. Rapporten ble kanskje ikke lagret korrekt. Feil: ${error.message}.`);
+            showModal("Feil ved lagring", `Noe gikk galt. Feil: ${error.message}.`);
         } finally {
             setIsSubmitting(false);
             setSubmissionStatus('');
         }
+    };
+    
+    const handleDeleteReport = (reportId, images) => {
+        const performDelete = async () => {
+            console.log(`Sletter rapport ${reportId}`);
+            try {
+                // Delete images from Storage
+                if (images && images.length > 0) {
+                    const deletePromises = images.map(imageUrl => {
+                        const imageRef = ref(storage, imageUrl);
+                        return deleteObject(imageRef);
+                    });
+                    await Promise.allSettled(deletePromises);
+                    console.log("Bilder slettet fra Storage.");
+                }
+
+                // Delete document from Firestore
+                await deleteDoc(doc(db, "reports", reportId));
+                console.log("Rapport slettet fra Firestore.");
+
+                // Update UI
+                setArchivedReports(prev => prev.filter(r => r.id !== reportId));
+                showModal("Suksess", "Rapporten ble slettet.");
+
+            } catch (err) {
+                console.error("Feil ved sletting:", err);
+                setLastError(err);
+                showModal("Slettefeil", `Kunne ikke slette rapporten. Feil: ${err.message}`);
+            }
+        };
+
+        showModal(
+            "Slette rapport?", 
+            "Er du sikker på at du vil slette? Rapporten og alle tilhørende bilder blir slettet for godt.",
+            performDelete
+        );
     };
 
 
@@ -375,7 +392,7 @@ function MainApp({ user }) {
             {modal.isOpen && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm text-center">{modal.onConfirm ? <AlertTriangle className="h-12 w-12 text-yellow-500 mx-auto mb-4" /> : <ShieldCheck className="h-12 w-12 text-green-500 mx-auto mb-4" />}<h2 className="text-xl font-bold text-gray-800 mb-2">{modal.title}</h2><p className="text-gray-600 mb-6">{modal.message}</p><div className={`flex ${modal.onConfirm ? 'justify-between' : 'justify-center'}`}>{modal.onConfirm && <button onClick={closeModal} className="bg-gray-200 text-gray-800 font-bold py-2 px-6 rounded-md">Avbryt</button>}<button onClick={handleConfirm} className="bg-red-600 text-white font-bold py-2 px-6 rounded-md">{modal.onConfirm ? 'Bekreft' : 'OK'}</button></div></div></div>)}
             {isPasswordPromptOpen && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><form onSubmit={handlePasswordSubmit} className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm"><div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Admin-pålogging</h2><button type="button" onClick={() => setIsPasswordPromptOpen(false)}><X size={24} /></button></div><p className="text-sm text-gray-600 mb-4">Skriv inn passord.</p><div><label htmlFor="password">Passord</label><input type="password" id="password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} className={`w-full p-2 border ${passwordError ? 'border-red-500' : 'border-gray-300'} rounded-md`} autoFocus/>{passwordError && <p className="text-red-500 text-xs mt-1">{passwordError}</p>}</div><button type="submit" className="w-full mt-4 bg-red-600 text-white font-bold py-2 px-4 rounded-md flex items-center justify-center"><KeyRound size={18} className="mr-2" /> Logg inn</button></form></div>)}
             {isAdminMode && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-md"><div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Admin-innstillinger</h2><button onClick={() => setIsAdminMode(false)}><X size={24} /></button></div><div><label htmlFor="adminEmail">Mottakerens e-post</label><input type="email" id="adminEmail" value={tempAdminEmail} onChange={(e) => setTempAdminEmail(e.target.value)} className="w-full p-2 border border-gray-300 rounded-md"/></div><button onClick={saveAdminEmail} className="w-full mt-4 bg-red-600 text-white font-bold py-2 px-4 rounded-md flex items-center justify-center"><Save size={18} className="mr-2" /> Lagre</button></div></div>)}
-            {isArchiveOpen && (<div className="fixed inset-0 bg-white z-40 p-4 sm:p-6 lg:p-8"><div className="max-w-4xl mx-auto h-full flex flex-col"><div className="flex justify-between items-center mb-4 pb-4 border-b"><h2 className="text-2xl font-bold text-red-800">Rapportarkiv</h2><button onClick={() => { setIsArchiveOpen(false); setSelectedReport(null); }} className="p-2 text-gray-600 hover:text-red-700"><X size={28} /></button></div>{isArchiveLoading ? (<div className="flex-grow flex items-center justify-center"><Loader2 className="h-12 w-12 animate-spin text-red-600" /></div>) : selectedReport ? (<ReportDetailView report={selectedReport} onBack={() => setSelectedReport(null)} recipientEmail={recipientEmail} />) : (<ArchiveListView reports={archivedReports} onSelectReport={setSelectedReport} />)}</div></div>)}
+            {isArchiveOpen && (<div className="fixed inset-0 bg-white z-40 p-4 sm:p-6 lg:p-8"><div className="max-w-4xl mx-auto h-full flex flex-col"><div className="flex justify-between items-center mb-4 pb-4 border-b"><h2 className="text-2xl font-bold text-red-800">Rapportarkiv</h2><button onClick={() => { setIsArchiveOpen(false); setSelectedReport(null); }} className="p-2 text-gray-600 hover:text-red-700"><X size={28} /></button></div>{isArchiveLoading ? (<div className="flex-grow flex items-center justify-center"><Loader2 className="h-12 w-12 animate-spin text-red-600" /></div>) : selectedReport ? (<ReportDetailView report={selectedReport} onBack={() => setSelectedReport(null)} recipientEmail={recipientEmail} />) : (<ArchiveListView reports={archivedReports} onSelectReport={setSelectedReport} onDeleteReport={handleDeleteReport} />)}</div></div>)}
             {isInfoOpen && <InfoModal onClose={() => setIsInfoOpen(false)} error={lastError} />}
             
             <header className="bg-red-700 text-white shadow-md sticky top-0 z-20">
@@ -431,19 +448,24 @@ function MainApp({ user }) {
 
                     <div className="bg-white p-6 rounded-lg shadow mb-6">
                         <h2 className="text-lg font-bold border-b pb-2 mb-4 text-red-800">Bilder</h2>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
                             {form.images.map((image, index) => (
-                                <div key={index} className="relative group">
-                                    <img src={image.preview} alt={`Forhåndsvisning ${index + 1}`} className="w-full h-32 object-cover rounded-md" />
+                                <div key={index} className="relative group aspect-square">
+                                    <img src={image.preview} alt={`Forhåndsvisning ${index + 1}`} className="w-full h-full object-cover rounded-md" />
                                     <button type="button" onClick={() => handleRemoveImage(index)} className="absolute top-1 right-1 bg-black bg-opacity-50 text-white rounded-full p-1 group-hover:opacity-100 opacity-0 transition-opacity">
                                         <Trash2 size={16} />
                                     </button>
                                 </div>
                             ))}
-                             <label htmlFor="imageUpload" className="w-full h-32 border-2 border-dashed rounded-md flex flex-col items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-red-600 cursor-pointer">
+                             <label htmlFor="imageUpload" className="aspect-square border-2 border-dashed rounded-md flex flex-col items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-red-600 cursor-pointer">
                                 <Upload size={32} />
-                                <span className="text-sm mt-2 text-center">Last opp bilder</span>
+                                <span className="text-sm mt-2 text-center">Last opp</span>
                                 <input id="imageUpload" type="file" multiple accept="image/*" className="hidden" onChange={handleImageSelect} />
+                            </label>
+                            <label htmlFor="cameraUpload" className="aspect-square border-2 border-dashed rounded-md flex flex-col items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-red-600 cursor-pointer">
+                                <Camera size={32} />
+                                <span className="text-sm mt-2 text-center">Ta bilde</span>
+                                <input id="cameraUpload" type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageSelect} />
                             </label>
                         </div>
                     </div>
@@ -478,14 +500,11 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
 
     const downloadPdf = async () => {
         setIsDownloading(true);
-        setDownloadStatus('Initialiserer PDF...');
         const pdf = new jsPDF('p', 'mm', 'a4');
         const margin = 10;
         const pageHeight = pdf.internal.pageSize.getHeight();
         const pageWidth = pdf.internal.pageSize.getWidth();
         let y = 15;
-        const lineHeight = 6;
-        const fieldGap = 8;
         
         const checkPageBreak = (spaceNeeded = 20) => {
             if (y + spaceNeeded > pageHeight - margin) {
@@ -494,40 +513,30 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
             }
         };
 
-        const drawHeader = () => {
-             pdf.setFont("helvetica", "bold").setFontSize(24).text("RVR", margin, y);
-             pdf.setFont("helvetica", "normal").setFontSize(10).text("Restverdiredning", margin, y + 5);
-             pdf.setFont("helvetica", "bold").setFontSize(24).text("RVR-RAPPORT", pageWidth - margin, y, { align: 'right' });
-             pdf.setFont("helvetica", "normal").setFontSize(10).text("Restverdiredning", pageWidth - margin, y + 5, { align: 'right' });
-             y += 20;
-        };
+        const drawSection = (title, contentDrawer) => {
+            checkPageBreak(20); 
+            const startY = y;
+            pdf.setFontSize(10);
+            const titleWidth = pdf.getStringUnitWidth(title) * pdf.getFontSize() / pdf.internal.scaleFactor;
+            
+            y += 8;
+            contentDrawer(margin + 3, y);
+            const endY = y;
 
-        const drawCheckbox = (x, yPos, text, isChecked) => {
-            pdf.setDrawColor(0);
-            pdf.rect(x, yPos - 3.5, 4, 4);
-            if (isChecked) {
-                pdf.setFontSize(10).text('X', x + 0.8, yPos);
-            }
-            pdf.setFont("helvetica", "normal").setFontSize(10).text(text, x + 6, yPos);
-        };
-        
-        const drawTextBox = (label, content, customHeight) => {
-             checkPageBreak(customHeight || 30);
-             pdf.setFont("helvetica", "bold").setFontSize(10).text(label, margin, y);
-             y += 5;
-             const textLines = pdf.splitTextToSize(content || 'Ikke spesifisert', pageWidth - margin * 2 - 4);
-             const boxHeight = customHeight || (textLines.length * (lineHeight-1)) + 6;
-             checkPageBreak(boxHeight + 5);
-             pdf.setDrawColor(180, 180, 180);
-             pdf.rect(margin, y, pageWidth - margin * 2, boxHeight);
-             pdf.setFont("helvetica", "normal").setFontSize(10).text(textLines, margin + 2, y + 5);
-             y += boxHeight + fieldGap;
+            pdf.setDrawColor(180, 180, 180);
+            pdf.rect(margin, startY, pageWidth - margin * 2, endY - startY + 5);
+
+            pdf.setFillColor(255, 255, 255);
+            pdf.rect(margin + 8, startY - 3, titleWidth + 4, 6, 'F');
+            pdf.setFont("helvetica", "bold").setFontSize(12).text(title, margin + 10, startY + 1.5);
+            y = endY + 10;
         };
 
         const addImagesToPdf = async () => {
             if (!report.images || report.images.length === 0) return;
             
-            checkPageBreak(pageHeight);
+            pdf.addPage();
+            y = 15;
             pdf.setFont("helvetica", "bold").setFontSize(14).text("Vedlegg: Bilder", margin, y);
             y += 15;
 
@@ -538,11 +547,10 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
                 try {
                     const response = await fetch(imageUrl);
                     const blob = await response.blob();
-                    const reader = new FileReader();
-                    
                     const dataUrl = await new Promise((resolve, reject) => {
-                        reader.onload = event => resolve(event.target.result);
-                        reader.onerror = error => reject(error);
+                        const reader = new FileReader();
+                        reader.onloadend = () => resolve(reader.result);
+                        reader.onerror = reject;
                         reader.readAsDataURL(blob);
                     });
                     
@@ -552,134 +560,109 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
                     
                     checkPageBreak(imgHeight + 10);
                     
-                    pdf.addImage(dataUrl, 'JPEG', margin, y, imgWidth, imgHeight);
+                    pdf.addImage(dataUrl, imgProps.fileType, margin, y, imgWidth, imgHeight);
                     y += imgHeight + 10;
 
                 } catch (error) {
-                    console.error("Could not add image to PDF:", error);
+                    console.error("Kunne ikke legge til bilde i PDF:", error);
                     checkPageBreak(10);
-                    pdf.setFont("helvetica", "italic").setTextColor(255, 0, 0).text(`Bilde kunne ikke lastes: ${imageUrl}`, margin, y);
+                    pdf.setFont("helvetica", "italic").setTextColor(255, 0, 0);
+                    pdf.text(`Bilde kunne ikke lastes: ${imageUrl.substring(0, 50)}...`, margin, y);
                     pdf.setTextColor(0, 0, 0);
                     y += 10;
                 }
             }
         };
 
-        setDownloadStatus('Bygger rapporttekst...');
-        drawHeader();
-        pdf.setFont("helvetica", "normal").setFontSize(10);
-        pdf.text(`Dato: ${report.reportDate || ''}`, margin, y);
-        pdf.text(`Skadestedets adresse: ${report.locationAddress || ''}`, margin, y + fieldGap);
-        pdf.text(`Tidspunkt for start RVR-oppdrag: ${report.startTime || ''}`, pageWidth / 2, y);
-        pdf.text(`Kommune: ${report.municipality || ''}`, pageWidth / 2, y + fieldGap);
-        y += fieldGap * 2;
-        pdf.text(`Utrykningsleder / RVR-ansvarlig på stedet: ${report.responseLeader || ''}`, margin, y);
-        y += fieldGap + 2;
-        pdf.setFont("helvetica", "bold").setFontSize(12).text("Forsikringstaker og- selskap", margin, y);
-        y += lineHeight;
-        (report.stakeholders || []).forEach((s, i) => {
-            checkPageBreak(35);
-            pdf.setFont("helvetica", "bold").setFontSize(10).text(`${i + 1}. Navn: `, margin, y);
-            pdf.setFont("helvetica", "normal").text(s.name || '', margin + 15, y);
-            drawCheckbox(margin + 90, y, 'Eier', s.type === 'Eier');
-            drawCheckbox(margin + 110, y, 'Leier', s.type === 'Leier');
-            y += fieldGap;
-            pdf.setFont("helvetica", "bold").text('TLF: ', margin, y);
-            pdf.setFont("helvetica", "normal").text(s.phone || '', margin + 15, y);
-            y += fieldGap;
-            pdf.setFont("helvetica", "bold").text('Adresse: ', margin, y);
-            pdf.setFont("helvetica", "normal").text(s.address || '', margin + 18, y);
-            y += fieldGap;
-            pdf.setFont("helvetica", "bold").text('Forsikringsselskap: ', margin, y);
-            pdf.setFont("helvetica", "normal").text(s.insurance || '', margin + 40, y);
-            y += fieldGap + 2;
-        });
-        checkPageBreak(10);
-        pdf.line(margin, y, pageWidth - margin, y);
-        y += fieldGap;
-        pdf.setFont("helvetica", "bold").setFontSize(12).text("Oppdrag og arbeid", margin, y);
-        y += lineHeight;
-        const createCheckboxColumn = (title, options, selected, x, startY) => {
-            let yPos = startY;
-            pdf.setFont("helvetica", "bold").setFontSize(10).text(title, x, yPos);
-            yPos += lineHeight;
-            options.forEach(opt => { checkPageBreak(8); drawCheckbox(x, yPos, opt, selected.includes(opt)); yPos += lineHeight; });
-            return yPos;
-        };
-        const sectorOptions = ['Privat (hus og hytte)', 'Borettslag, sameie, blokk', 'Næringsbygg, kjøpesenter, restaurant, driftsbygning', 'Offentlig - kommune, fylke, stat, forsvar'];
-        const buildingTypeOptions = ['Enebolig', 'Leilighet, borettslag, sameie, blokk', 'Hytte', 'Landbruksbygg', 'Industri', 'Næringsvirksomhet', 'Hotell, overnattingssted', 'Skole, barnehage, idrettshall', 'Annet'];
-        let yCol1 = createCheckboxColumn("Hvilken sektor gjelder det?", sectorOptions, report.sector || [], margin, y);
-        let yCol2 = createCheckboxColumn("Hvilken type bygg er det?", buildingTypeOptions, report.buildingType || [], margin + 95, y);
-        y = Math.max(yCol1, yCol2) + fieldGap;
-        checkPageBreak(25);
-        pdf.setFont("helvetica", "bold").setFontSize(10).text("Oppgi skadetype:", margin, y);
-        drawCheckbox(margin + 40, y, "Brannskade", (report.damageType || []).includes("Brannskade"));
-        drawCheckbox(margin + 75, y, "Vannskade", (report.damageType || []).includes("Vannskade"));
-        drawCheckbox(margin + 110, y, "Annet", (report.damageType || []).includes("Annet"));
-        y += fieldGap;
-        const detailFields1 = [
-            { label: 'Hvor mange etasjer har bygget?', value: report.buildingFloors },
-            { label: 'Hvor stor er antatt grunnflate i m2?', value: report.baseArea },
-            { label: 'Hvor mange rom er skadet?', value: report.damagedRooms },
-        ];
-        const detailFields2 = [
-            { label: 'Hvor mange etasjer er skadet?', value: report.damagedFloors },
-            { label: 'Hvor mange kvadratmeter er antatt skadet?', value: report.damagedArea },
-        ];
-        
-        detailFields1.forEach(f => {
-            checkPageBreak(8);
-            pdf.setFont("helvetica", "bold").text(f.label, margin, y);
-            pdf.setFont("helvetica", "normal").text(String(f.value || ''), margin + 70, y);
-            y += lineHeight;
-        });
-         detailFields2.forEach(f => {
-            checkPageBreak(8);
-            pdf.setFont("helvetica", "bold").text(f.label, margin + 95, y - (lineHeight * detailFields1.length));
-            pdf.setFont("helvetica", "normal").text(String(f.value || ''), margin + 175, y - (lineHeight * detailFields1.length));
-            y += lineHeight;
-        });
-        y -= lineHeight * (detailFields1.length -1);
-        const workPerformedOptions = [
-            'Pulversuging', 'Røykventilering', 'Lensing av vann', 'Avfukting/tørking', 'Innbo eller utstyr kjørt bort', 
-            'Inventar eller utstyr tildekket med plast', 'Deler av bygningen tildekket med plast', 'Brukt flomvernmateriell', 
-            'Utført sanering-/konservering', 'Utført måling av klorider', 'Strømlevering', 'Inventar eller utstyr flyttet til «sikkert>> sted'
-        ];
-        createCheckboxColumn("Hva slags RVR-arbeid ble utført?", workPerformedOptions, report.workPerformed || [], margin, y);
-        y += workPerformedOptions.length * lineHeight + fieldGap;
-        checkPageBreak(pageHeight); 
-        drawTextBox("Hvilke verdier ble reddet? (Skal fylles ut)", report.valuesSaved || '', 40);
-        const equipmentOptions = ['Plast', 'Avfukter', 'Lensepumpe', 'Røykvifte', 'Sprinklerstopper', 'Strømaggregat', 'Annet'];
-        let yEquip = createCheckboxColumn("Benyttet utstyr?", equipmentOptions, report.equipmentUsed || [], margin, y);
-        y = yEquip + fieldGap;
-        drawTextBox("Beskriv skadeobjektet ved ankomst og arbeidets forløp. (Skal fylles ut)", report.damageDescription || '', 60);
-        checkPageBreak(40);
-        pdf.setFont("helvetica", "bold").setFontSize(12).text("RVR-personell", margin, y);
-        y += lineHeight;
-        const tableCol = [margin, margin + 50, margin + 110, margin + 140];
-        const tableHeader = ["Vaktmannskap", "Brannvesen / brannstasjon", "Ant. mannskap", "Ant. timer"];
-        pdf.setDrawColor(0);
-        pdf.setFillColor(230, 230, 230);
-        pdf.rect(margin, y, pageWidth - margin*2, 8, 'F');
-        pdf.setFont("helvetica", "bold").setFontSize(10);
-        pdf.text(tableHeader[0], tableCol[0] + 2, y + 5.5);
-        pdf.text(tableHeader[1], tableCol[1] + 2, y + 5.5);
-        pdf.text(tableHeader[2], tableCol[2] + 2, y + 5.5);
-        pdf.text(tableHeader[3], tableCol[3] + 2, y + 5.5);
+        setDownloadStatus('Bygger rapport...');
+        pdf.setFont("helvetica", "bold").setFontSize(24).text("RVR-RAPPORT", pageWidth / 2, y, { align: 'center' });
         y += 8;
-        const drawTableRow = (rowData) => {
-            checkPageBreak(8);
-            pdf.rect(margin, y, pageWidth - margin*2, 8);
-            pdf.setFont("helvetica", "normal").setFontSize(10);
-            pdf.text(String(rowData[0] || ''), tableCol[0] + 2, y + 5.5);
-            pdf.text(String(rowData[1] || ''), tableCol[1] + 2, y + 5.5);
-            pdf.text(String(rowData[2] || ''), tableCol[2] + 2, y + 5.5);
-            pdf.text(String(rowData[3] || ''), tableCol[3] + 2, y + 5.5);
-            y += 8;
-        };
-        drawTableRow(["På vakt", report.personnelOnDuty?.station, report.personnelOnDuty?.count, report.personnelOnDuty?.hours]);
-        drawTableRow(["Innkalt", report.personnelCalledIn?.station, report.personnelCalledIn?.count, report.personnelCalledIn?.hours]);
+        pdf.setFont("helvetica", "normal").setFontSize(12).text("Restverdiredning", pageWidth / 2, y, { align: 'center' });
+        y += 15;
         
+        drawSection("Generell Informasjon", (x, startY) => {
+            let currentY = startY;
+            pdf.setFont("helvetica", "normal").setFontSize(10);
+            pdf.text(`Dato: ${report.reportDate || ''}`, x, currentY);
+            pdf.text(`Tidspunkt: ${report.startTime || ''}`, x + (pageWidth / 2.5), currentY);
+            currentY += 7;
+            pdf.text(`Adresse: ${report.locationAddress || ''}`, x, currentY);
+            pdf.text(`Kommune: ${report.municipality || ''}`, x + (pageWidth / 2.5), currentY);
+            currentY += 7;
+            pdf.text(`Utrykningsleder/RVR-ansvarlig: ${report.responseLeader || ''}`, x, currentY);
+            y = currentY;
+        });
+
+        drawSection("Forsikringstaker(e)", (x, startY) => {
+            let currentY = startY;
+             pdf.setFont("helvetica", "normal").setFontSize(10);
+            (report.stakeholders || []).forEach((s, i) => {
+                if (i > 0) currentY += 5;
+                pdf.setFont("helvetica", "bold").text(`Person ${i + 1}: ${s.name || ''} (${s.type || ''})`, x, currentY);
+                currentY += 7;
+                pdf.setFont("helvetica", "normal");
+                pdf.text(`Tlf: ${s.phone || ''}`, x, currentY);
+                pdf.text(`Forsikring: ${s.insurance || ''}`, x + (pageWidth / 2.5), currentY);
+                currentY += 7;
+                pdf.text(`Adresse: ${s.address || ''}`, x, currentY);
+                currentY += 7;
+            });
+            y = currentY - 7;
+        });
+
+        drawSection("Oppdrag og Arbeid", (x, startY) => {
+            let currentY = startY;
+            const item = (label, value) => {
+                pdf.setFont("helvetica", "bold").text(label, x, currentY);
+                pdf.setFont("helvetica", "normal").text(String(value || '-'), x + 65, currentY);
+                currentY += 7;
+            }
+            item("Sektor:", (report.sector || []).join(', '));
+            item("Byggtype:", (report.buildingType || []).join(', '));
+            item("Skadetype:", (report.damageType || []).join(', '));
+            currentY += 3;
+            item("Etasjer i bygget:", report.buildingFloors);
+            item("Skadede etasjer:", report.damagedFloors);
+            item("Antatt grunnflate (m²):", report.baseArea);
+            item("Antatt skadet areal (m²):", report.damagedArea);
+            item("Antall skadede rom:", report.damagedRooms);
+            y = currentY - 7;
+        });
+        
+        drawSection("Arbeidsdetaljer", (x, startY) => {
+            let currentY = startY;
+            pdf.setFont("helvetica", "bold").text("Utført RVR-arbeid:", x, currentY);
+            currentY += 6;
+            pdf.setFont("helvetica", "normal").text((report.workPerformed || []).join(', ') || '-', x, currentY, { maxWidth: pageWidth - margin * 2 - 10 });
+            currentY += 14;
+
+            pdf.setFont("helvetica", "bold").text("Benyttet utstyr:", x, currentY);
+            currentY += 6;
+            pdf.setFont("helvetica", "normal").text((report.equipmentUsed || []).join(', ') || '-', x, currentY, { maxWidth: pageWidth - margin * 2 - 10 });
+            currentY += 14;
+
+            pdf.setFont("helvetica", "bold").text("Reddede verdier:", x, currentY);
+            currentY += 6;
+            pdf.setFont("helvetica", "normal").text(report.valuesSaved || '-', x, currentY, { maxWidth: pageWidth - margin * 2 - 10 });
+            currentY += 14;
+
+            pdf.setFont("helvetica", "bold").text("Beskrivelse av skade og forløp:", x, currentY);
+            currentY += 6;
+            pdf.setFont("helvetica", "normal").text(report.damageDescription || '-', x, currentY, { maxWidth: pageWidth - margin * 2 - 10 });
+
+            y = currentY + pdf.splitTextToSize(report.damageDescription || '-', pageWidth - margin * 2 - 10).length * 4;
+        });
+
+        drawSection("RVR-Personell", (x, startY) => {
+            let currentY = startY;
+            pdf.setFont("helvetica", "bold").text("Personell på vakt:", x, currentY);
+            pdf.setFont("helvetica", "normal").text(`Stasjon: ${report.personnelOnDuty?.station || '-'}, Antall: ${report.personnelOnDuty?.count || '-'}, Timer: ${report.personnelOnDuty?.hours || '-'}`, x + 50, currentY);
+            currentY += 10;
+            pdf.setFont("helvetica", "bold").text("Innkalt personell:", x, currentY);
+            pdf.setFont("helvetica", "normal").text(`Stasjon: ${report.personnelCalledIn?.station || '-'}, Antall: ${report.personnelCalledIn?.count || '-'}, Timer: ${report.personnelCalledIn?.hours || '-'}`, x + 50, currentY);
+            y = currentY;
+        });
+
         await addImagesToPdf();
 
         setDownloadStatus('Lagrer PDF...');
@@ -750,9 +733,30 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
     );
 }
 
-function ArchiveListView({ reports, onSelectReport }) {
+function ArchiveListView({ reports, onSelectReport, onDeleteReport }) {
     if (reports.length === 0) return <div className="text-center text-gray-500 py-10">Ingen rapporter funnet i arkivet.</div>;
-    return <div className="space-y-3 overflow-y-auto">{reports.map(report => (<button key={report.id} onClick={() => onSelectReport(report)} className="w-full text-left p-4 bg-gray-50 hover:bg-red-50 border border-gray-200 rounded-lg shadow-sm transition-all"><p className="font-bold text-gray-800">{report.locationAddress}</p><p className="text-sm text-gray-600">{report.createdAt ? new Date(report.createdAt.seconds * 1000).toLocaleString('nb-NO') : 'Dato mangler'}</p></button>))}</div>;
+    return (
+        <div className="space-y-3 overflow-y-auto">
+            {reports.map(report => (
+                <div key={report.id} className="w-full flex items-center justify-between p-4 bg-gray-50 hover:bg-red-50 border border-gray-200 rounded-lg shadow-sm transition-all">
+                    <button onClick={() => onSelectReport(report)} className="flex-grow text-left">
+                        <p className="font-bold text-gray-800">{report.locationAddress}</p>
+                        <p className="text-sm text-gray-600">{report.createdAt ? new Date(report.createdAt.seconds * 1000).toLocaleString('nb-NO') : 'Dato mangler'}</p>
+                    </button>
+                    <button 
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteReport(report.id, report.images);
+                        }}
+                        className="p-2 text-gray-400 hover:text-red-600"
+                        title="Slett rapport"
+                    >
+                        <Trash2 size={20} />
+                    </button>
+                </div>
+            ))}
+        </div>
+    );
 }
 
 function InfoModal({ onClose, error }) {
@@ -766,7 +770,7 @@ function InfoModal({ onClose, error }) {
                 <div className="p-6 space-y-4 overflow-y-auto text-gray-700">
                     <h3 className="font-bold">Siste registrerte feil</h3>
                     {error ? (
-                        <div className="p-3 bg-red-50 text-red-800 border border-red-200 rounded-md font-mono text-sm">
+                        <div className="p-3 bg-red-50 text-red-800 border border-red-200 rounded-md font-mono text-sm break-words">
                             <p><strong>Kode:</strong> {error.code || 'Ingen kode'}</p>
                             <p><strong>Melding:</strong> {error.message || 'Ingen melding'}</p>
                         </div>
@@ -774,7 +778,7 @@ function InfoModal({ onClose, error }) {
                         <p>Ingen feil har blitt registrert i denne økten.</p>
                     )}
                      <h3 className="font-bold pt-4 border-t">Systeminformasjon</h3>
-                     <div className="p-3 bg-gray-50 border rounded-md font-mono text-sm">
+                     <div className="p-3 bg-gray-50 border rounded-md font-mono text-sm break-words">
                         <p><strong>Prosjekt-ID:</strong> {firebaseConfig.projectId}</p>
                         <p><strong>Storage Bucket:</strong> {firebaseConfig.storageBucket}</p>
                         <p><strong>Auth Domain:</strong> {firebaseConfig.authDomain}</p>
