@@ -10,7 +10,7 @@ import {
     setPersistence,
     browserLocalPersistence
 } from 'firebase/auth';
-import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2, Camera, Upload } from 'lucide-react';
+import { UserCog, X, Plus, Save, Loader2, ShieldCheck, AlertTriangle, KeyRound, Archive, ArrowLeft, Info, LogOut, Shield, Mail, FileDown, Trash2, Camera, Upload, Bug } from 'lucide-react';
 import { jsPDF } from "jspdf";
 
 // --- Firebase Configuration ---
@@ -179,6 +179,7 @@ function MainApp({ user }) {
     const [selectedReport, setSelectedReport] = useState(null);
     const [isArchiveLoading, setIsArchiveLoading] = useState(false);
     const [isInfoOpen, setIsInfoOpen] = useState(false);
+    const [isDebugOpen, setIsDebugOpen] = useState(false);
     const [lastError, setLastError] = useState(null);
 
     useEffect(() => {
@@ -341,23 +342,15 @@ function MainApp({ user }) {
     
     const handleDeleteReport = (reportId, images) => {
         const performDelete = async () => {
-            console.log(`Sletter rapport ${reportId}`);
             try {
-                // Delete images from Storage
                 if (images && images.length > 0) {
                     const deletePromises = images.map(imageUrl => {
                         const imageRef = ref(storage, imageUrl);
                         return deleteObject(imageRef);
                     });
                     await Promise.allSettled(deletePromises);
-                    console.log("Bilder slettet fra Storage.");
                 }
-
-                // Delete document from Firestore
                 await deleteDoc(doc(db, "reports", reportId));
-                console.log("Rapport slettet fra Firestore.");
-
-                // Update UI
                 setArchivedReports(prev => prev.filter(r => r.id !== reportId));
                 showModal("Suksess", "Rapporten ble slettet.");
 
@@ -391,15 +384,16 @@ function MainApp({ user }) {
         <div className="bg-gray-50 min-h-screen font-sans">
             {modal.isOpen && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm text-center">{modal.onConfirm ? <AlertTriangle className="h-12 w-12 text-yellow-500 mx-auto mb-4" /> : <ShieldCheck className="h-12 w-12 text-green-500 mx-auto mb-4" />}<h2 className="text-xl font-bold text-gray-800 mb-2">{modal.title}</h2><p className="text-gray-600 mb-6">{modal.message}</p><div className={`flex ${modal.onConfirm ? 'justify-between' : 'justify-center'}`}>{modal.onConfirm && <button onClick={closeModal} className="bg-gray-200 text-gray-800 font-bold py-2 px-6 rounded-md">Avbryt</button>}<button onClick={handleConfirm} className="bg-red-600 text-white font-bold py-2 px-6 rounded-md">{modal.onConfirm ? 'Bekreft' : 'OK'}</button></div></div></div>)}
             {isPasswordPromptOpen && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><form onSubmit={handlePasswordSubmit} className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm"><div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Admin-pålogging</h2><button type="button" onClick={() => setIsPasswordPromptOpen(false)}><X size={24} /></button></div><p className="text-sm text-gray-600 mb-4">Skriv inn passord.</p><div><label htmlFor="password">Passord</label><input type="password" id="password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} className={`w-full p-2 border ${passwordError ? 'border-red-500' : 'border-gray-300'} rounded-md`} autoFocus/>{passwordError && <p className="text-red-500 text-xs mt-1">{passwordError}</p>}</div><button type="submit" className="w-full mt-4 bg-red-600 text-white font-bold py-2 px-4 rounded-md flex items-center justify-center"><KeyRound size={18} className="mr-2" /> Logg inn</button></form></div>)}
-            {isAdminMode && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-md"><div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Admin-innstillinger</h2><button onClick={() => setIsAdminMode(false)}><X size={24} /></button></div><div><label htmlFor="adminEmail">Mottakerens e-post</label><input type="email" id="adminEmail" value={tempAdminEmail} onChange={(e) => setTempAdminEmail(e.target.value)} className="w-full p-2 border border-gray-300 rounded-md"/></div><button onClick={saveAdminEmail} className="w-full mt-4 bg-red-600 text-white font-bold py-2 px-4 rounded-md flex items-center justify-center"><Save size={18} className="mr-2" /> Lagre</button></div></div>)}
+            {isAdminMode && (<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-md"><div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Admin-innstillinger</h2><button onClick={() => setIsAdminMode(false)}><X size={24} /></button></div><div className="space-y-4"><div><label htmlFor="adminEmail">Mottakerens e-post</label><input type="email" id="adminEmail" value={tempAdminEmail} onChange={(e) => setTempAdminEmail(e.target.value)} className="w-full p-2 border border-gray-300 rounded-md"/></div><button onClick={saveAdminEmail} className="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-md flex items-center justify-center"><Save size={18} className="mr-2" /> Lagre E-post</button><button onClick={() => setIsDebugOpen(true)} className="w-full bg-gray-600 text-white font-bold py-2 px-4 rounded-md flex items-center justify-center"><Bug size={18} className="mr-2" /> Vis Feilsøkingsinfo</button></div></div></div>)}
             {isArchiveOpen && (<div className="fixed inset-0 bg-white z-40 p-4 sm:p-6 lg:p-8"><div className="max-w-4xl mx-auto h-full flex flex-col"><div className="flex justify-between items-center mb-4 pb-4 border-b"><h2 className="text-2xl font-bold text-red-800">Rapportarkiv</h2><button onClick={() => { setIsArchiveOpen(false); setSelectedReport(null); }} className="p-2 text-gray-600 hover:text-red-700"><X size={28} /></button></div>{isArchiveLoading ? (<div className="flex-grow flex items-center justify-center"><Loader2 className="h-12 w-12 animate-spin text-red-600" /></div>) : selectedReport ? (<ReportDetailView report={selectedReport} onBack={() => setSelectedReport(null)} recipientEmail={recipientEmail} />) : (<ArchiveListView reports={archivedReports} onSelectReport={setSelectedReport} onDeleteReport={handleDeleteReport} />)}</div></div>)}
-            {isInfoOpen && <InfoModal onClose={() => setIsInfoOpen(false)} error={lastError} />}
-            
+            {isInfoOpen && <GuidelinesModal onClose={() => setIsInfoOpen(false)} />}
+            {isDebugOpen && <DebugModal onClose={() => setIsDebugOpen(false)} error={lastError} />}
+
             <header className="bg-red-700 text-white shadow-md sticky top-0 z-20">
                 <div className="container mx-auto px-4 py-3 flex justify-between items-center">
                     <h1 className="text-xl md:text-2xl font-bold">RVR Rapport</h1>
                     <div className="flex items-center gap-1">
-                        <button onClick={() => setIsInfoOpen(true)} className="p-2 rounded-full hover:bg-red-600 transition-colors" title="Feilsøking"><Info size={24} /></button>
+                        <button onClick={() => setIsInfoOpen(true)} className="p-2 rounded-full hover:bg-red-600 transition-colors" title="Informasjon"><Info size={24} /></button>
                         <button onClick={openArchive} className="p-2 rounded-full hover:bg-red-600 transition-colors" title="Arkiv"><Archive size={24} /></button>
                         <button onClick={() => setIsPasswordPromptOpen(true)} className="p-2 rounded-full hover:bg-red-600 transition-colors" title="Admin-innstillinger"><UserCog size={24} /></button>
                         <button onClick={handleLogout} className="p-2 rounded-full hover:bg-red-600 transition-colors" title="Logg ut"><LogOut size={24} /></button>
@@ -582,29 +576,45 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
         
         drawSection("Generell Informasjon", (x, startY) => {
             let currentY = startY;
-            pdf.setFont("helvetica", "normal").setFontSize(10);
-            pdf.text(`Dato: ${report.reportDate || ''}`, x, currentY);
-            pdf.text(`Tidspunkt: ${report.startTime || ''}`, x + (pageWidth / 2.5), currentY);
+            const valueX = x + 55;
+            pdf.setFontSize(10);
+
+            pdf.setFont("helvetica", "bold").text('Dato:', x, currentY);
+            pdf.setFont("helvetica", "normal").text(report.reportDate || '-', valueX, currentY);
+            pdf.setFont("helvetica", "bold").text('Tidspunkt:', x + (pageWidth / 2.2), currentY);
+            pdf.setFont("helvetica", "normal").text(report.startTime || '-', x + (pageWidth / 2.2) + 25, currentY);
             currentY += 7;
-            pdf.text(`Adresse: ${report.locationAddress || ''}`, x, currentY);
-            pdf.text(`Kommune: ${report.municipality || ''}`, x + (pageWidth / 2.5), currentY);
+
+            pdf.setFont("helvetica", "bold").text('Adresse:', x, currentY);
+            pdf.setFont("helvetica", "normal").text(report.locationAddress || '-', valueX, currentY);
+            pdf.setFont("helvetica", "bold").text('Kommune:', x + (pageWidth / 2.2), currentY);
+            pdf.setFont("helvetica", "normal").text(report.municipality || '-', x + (pageWidth / 2.2) + 25, currentY);
             currentY += 7;
-            pdf.text(`Utrykningsleder/RVR-ansvarlig: ${report.responseLeader || ''}`, x, currentY);
+
+            pdf.setFont("helvetica", "bold").text('Utrykningsleder/RVR-ansvarlig:', x, currentY);
+            pdf.setFont("helvetica", "normal").text(report.responseLeader || '-', valueX, currentY);
             y = currentY;
         });
 
         drawSection("Forsikringstaker(e)", (x, startY) => {
             let currentY = startY;
-             pdf.setFont("helvetica", "normal").setFontSize(10);
             (report.stakeholders || []).forEach((s, i) => {
                 if (i > 0) currentY += 5;
-                pdf.setFont("helvetica", "bold").text(`Person ${i + 1}: ${s.name || ''} (${s.type || ''})`, x, currentY);
+                const valueX = x + 35;
+                pdf.setFontSize(10);
+
+                pdf.setFont("helvetica", "bold").text(`Person ${i + 1}:`, x, currentY);
+                pdf.setFont("helvetica", "normal").text(`${s.name || ''} (${s.type || ''})`, valueX, currentY);
                 currentY += 7;
-                pdf.setFont("helvetica", "normal");
-                pdf.text(`Tlf: ${s.phone || ''}`, x, currentY);
-                pdf.text(`Forsikring: ${s.insurance || ''}`, x + (pageWidth / 2.5), currentY);
+
+                pdf.setFont("helvetica", "bold").text('Tlf:', x, currentY);
+                pdf.setFont("helvetica", "normal").text(s.phone || '-', valueX, currentY);
+                pdf.setFont("helvetica", "bold").text('Forsikring:', x + (pageWidth / 2.2), currentY);
+                pdf.setFont("helvetica", "normal").text(s.insurance || '-', x + (pageWidth / 2.2) + 25, currentY);
                 currentY += 7;
-                pdf.text(`Adresse: ${s.address || ''}`, x, currentY);
+
+                pdf.setFont("helvetica", "bold").text('Adresse:', x, currentY);
+                pdf.setFont("helvetica", "normal").text(s.address || '-', valueX, currentY);
                 currentY += 7;
             });
             y = currentY - 7;
@@ -612,6 +622,7 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
 
         drawSection("Oppdrag og Arbeid", (x, startY) => {
             let currentY = startY;
+            pdf.setFontSize(10);
             const item = (label, value) => {
                 pdf.setFont("helvetica", "bold").text(label, x, currentY);
                 pdf.setFont("helvetica", "normal").text(String(value || '-'), x + 65, currentY);
@@ -631,35 +642,30 @@ function ReportDetailView({ report, onBack, recipientEmail }) {
         
         drawSection("Arbeidsdetaljer", (x, startY) => {
             let currentY = startY;
-            pdf.setFont("helvetica", "bold").text("Utført RVR-arbeid:", x, currentY);
-            currentY += 6;
-            pdf.setFont("helvetica", "normal").text((report.workPerformed || []).join(', ') || '-', x, currentY, { maxWidth: pageWidth - margin * 2 - 10 });
-            currentY += 14;
-
-            pdf.setFont("helvetica", "bold").text("Benyttet utstyr:", x, currentY);
-            currentY += 6;
-            pdf.setFont("helvetica", "normal").text((report.equipmentUsed || []).join(', ') || '-', x, currentY, { maxWidth: pageWidth - margin * 2 - 10 });
-            currentY += 14;
-
-            pdf.setFont("helvetica", "bold").text("Reddede verdier:", x, currentY);
-            currentY += 6;
-            pdf.setFont("helvetica", "normal").text(report.valuesSaved || '-', x, currentY, { maxWidth: pageWidth - margin * 2 - 10 });
-            currentY += 14;
-
-            pdf.setFont("helvetica", "bold").text("Beskrivelse av skade og forløp:", x, currentY);
-            currentY += 6;
-            pdf.setFont("helvetica", "normal").text(report.damageDescription || '-', x, currentY, { maxWidth: pageWidth - margin * 2 - 10 });
-
-            y = currentY + pdf.splitTextToSize(report.damageDescription || '-', pageWidth - margin * 2 - 10).length * 4;
+            pdf.setFontSize(10);
+            const multiLineItem = (label, value) => {
+                pdf.setFont("helvetica", "bold").text(label, x, currentY);
+                currentY += 6;
+                const lines = pdf.splitTextToSize(value || '-', pageWidth - margin * 2 - 10);
+                pdf.setFont("helvetica", "normal").text(lines, x, currentY);
+                currentY += lines.length * 5 + 4;
+            };
+            multiLineItem("Utført RVR-arbeid:", (report.workPerformed || []).join(', '));
+            multiLineItem("Benyttet utstyr:", (report.equipmentUsed || []).join(', '));
+            multiLineItem("Reddede verdier:", report.valuesSaved);
+            multiLineItem("Beskrivelse av skade og forløp:", report.damageDescription);
+            y = currentY - 10;
         });
 
         drawSection("RVR-Personell", (x, startY) => {
             let currentY = startY;
+            pdf.setFontSize(10);
+            const valueX = x + 50;
             pdf.setFont("helvetica", "bold").text("Personell på vakt:", x, currentY);
-            pdf.setFont("helvetica", "normal").text(`Stasjon: ${report.personnelOnDuty?.station || '-'}, Antall: ${report.personnelOnDuty?.count || '-'}, Timer: ${report.personnelOnDuty?.hours || '-'}`, x + 50, currentY);
+            pdf.setFont("helvetica", "normal").text(`Stasjon: ${report.personnelOnDuty?.station || '-'}, Antall: ${report.personnelOnDuty?.count || '-'}, Timer: ${report.personnelOnDuty?.hours || '-'}`, valueX, currentY);
             currentY += 10;
             pdf.setFont("helvetica", "bold").text("Innkalt personell:", x, currentY);
-            pdf.setFont("helvetica", "normal").text(`Stasjon: ${report.personnelCalledIn?.station || '-'}, Antall: ${report.personnelCalledIn?.count || '-'}, Timer: ${report.personnelCalledIn?.hours || '-'}`, x + 50, currentY);
+            pdf.setFont("helvetica", "normal").text(`Stasjon: ${report.personnelCalledIn?.station || '-'}, Antall: ${report.personnelCalledIn?.count || '-'}, Timer: ${report.personnelCalledIn?.hours || '-'}`, valueX, currentY);
             y = currentY;
         });
 
@@ -759,7 +765,37 @@ function ArchiveListView({ reports, onSelectReport, onDeleteReport }) {
     );
 }
 
-function InfoModal({ onClose, error }) {
+function GuidelinesModal({ onClose }) {
+    const InfoListItem = ({ children }) => (<li className="flex items-start gap-3"><span className="text-red-500 mt-1">&#10148;</span><span>{children}</span></li>);
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+                <div className="flex justify-between items-center p-4 border-b"><h2 className="text-xl font-bold text-gray-800">Føringer for RVR-arbeid</h2><button onClick={onClose} className="p-1 text-gray-500 hover:text-gray-800"><X size={24} /></button></div>
+                <div className="p-6 space-y-4 overflow-y-auto text-gray-700">
+                    <h3 className="font-bold">Følgende føringer gjelder når «lokalt brannvesen» utfører hele RVR-jobben selv:</h3>
+                    <ul className="space-y-3">
+                        <InfoListItem>Når lokalt brannvesen er ute på brann eller mindre vannlekkasje og gjør stedet «tørt og røykfritt», kan det skrives RVR-rapport på dette.</InfoListItem>
+                        <InfoListItem>F.eks. en kjøkkenbrann. Dere slukker brannen og setter på røykvifte for å gjøre det røykfritt. Da kan det skrives RVR-rapport på 1 eller 2 mannskap i f.eks. en halvtime eller time. <strong>Husk!</strong> Godtgjøring gjelder de som utfører RVR og ikke brannbekjempelse.</InfoListItem>
+                        <InfoListItem>Lokalt brannvesen kan iverksette og håndtere hele RVR-oppdraget alene, med det utstyret og de mannskapene dere har tilgjengelig.</InfoListItem>
+                        <InfoListItem>RVR-bil kan rykke ut med mer kompetanse og mer utstyr om oppdraget tilsier det. Dette avklares med vertskommune.</InfoListItem>
+                        <InfoListItem>Lokalt brannvesen må i slike tilfeller også foreta rapportskriving og billedtaking.</InfoListItem>
+                        <InfoListItem>All info må sendes til vaktleder hos vertskommunene for RVR i tilhørende region, som kvalitetssjekker og videresender.</InfoListItem>
+                        <InfoListItem>Ved større hendelser (større vannlekkasjer eller omfattende branner) vil det kunne være behov for flere mannskaper, men ved slike oppdrag bør uansett RVR-bil fra vertskommune rykke ut.</InfoListItem>
+                        <InfoListItem>Man må skille mellom det kommunale ansvaret (brannslokking, etterslokk, vakthold) og RVR-innsatsen (røykventilering, tildekking, utbæring av innbo etc.).</InfoListItem>
+                    </ul>
+                    <h3 className="font-bold pt-4 border-t">En forutsetning er at oppdrag skal avklares med vaktleder hos vertskommunen før RVR-arbeidet starter:</h3>
+                     <ul className="space-y-3">
+                        <InfoListItem>Her avtales det om man gjør det selv eller om vertskommunen for RVR bør rykke ut med RVR-bil og ekstra utstyr.</InfoListItem>
+                        <InfoListItem>Man skal ikke utføre arbeid og deretter sende over rapport uten at dette er avklart.</InfoListItem>
+                    </ul>
+                </div>
+                 <div className="p-4 bg-gray-50 border-t"><button onClick={onClose} className="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-md hover:bg-red-700">Lukk</button></div>
+            </div>
+        </div>
+    );
+}
+
+function DebugModal({ onClose, error }) {
     return (
         <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
@@ -784,9 +820,6 @@ function InfoModal({ onClose, error }) {
                         <p><strong>Auth Domain:</strong> {firebaseConfig.authDomain}</p>
                         <p><strong>Nettleser:</strong> {navigator.userAgent}</p>
                      </div>
-                    <p className="pt-4 border-t">
-                        Hvis problemet vedvarer, ta et skjermbilde av denne informasjonen og feilmeldingen i nettleserens konsoll (trykk F12 for å åpne) og send det til systemansvarlig.
-                    </p>
                 </div>
                  <div className="p-4 bg-gray-50 border-t"><button onClick={onClose} className="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-md hover:bg-red-700">Lukk</button></div>
             </div>
